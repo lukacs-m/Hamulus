@@ -1,0 +1,77 @@
+{
+  "manifest_version": 3,
+  "name": "Email Shield",
+  "version": "0.1.0",
+  "description": "Scores every opened email for phishing risk. Offline blocklist matching, lookalike-domain detection, tracking pixels, hidden content. Nothing in the email is ever executed or fetched.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://urlhaus.abuse.ch/*",
+    "https://openphish.com/*",
+    "https://phish.co.za/*",
+    "https://raw.githubusercontent.com/*",
+    "https://malware-filter.gitlab.io/*",
+    "https://cloudflare-dns.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "content/shared.js",
+        "content/gmail.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://mail.yahoo.com/*",
+        "https://*.mail.yahoo.com/*"
+      ],
+      "js": [
+        "content/shared.js",
+        "content/yahoo.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://outlook.live.com/*",
+        "https://outlook.office.com/*",
+        "https://outlook.office365.com/*",
+        "https://outlook.cloud.microsoft/*"
+      ],
+      "js": [
+        "content/shared.js",
+        "content/outlook.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://mail.proton.me/*"
+      ],
+      "js": [
+        "content/shared.js",
+        "content/proton.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Email Shield"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; img-src 'self'; connect-src https://urlhaus.abuse.ch https://openphish.com https://phish.co.za https://raw.githubusercontent.com https://malware-filter.gitlab.io https://cloudflare-dns.com"
+  },
+  "web_accessible_resources": []
+}
