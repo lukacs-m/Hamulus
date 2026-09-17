@@ -2,6 +2,7 @@
 import { FEEDS, normaliseUrl } from "./lib/feeds.js";
 import { analyse } from "./lib/analyzer.js";
 import { registrableDomain } from "./lib/domains.js";
+import { iconPaths, scoreTitle } from "./lib/icons.js";
 
 let brands = null;
 let blocklist = null; // { urls: Set, domains: Set, meta: {...} }
@@ -85,6 +86,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const dmarc = msg.settingsDmarc === false ? "unknown" : await dmarcPolicy(senderDomain ? registrableDomain(senderDomain) : null);
       const result = analyse({ ...msg.email, dmarc }, { blocklist: bl, brands: br });
       await chrome.storage.session?.set?.({ lastResult: { ...result, subject: msg.email.subject, sender: msg.email.sender } });
+      await Promise.all([
+        chrome.action.setIcon({ path: iconPaths(result.level) }),
+        chrome.action.setTitle({ title: scoreTitle(result) }),
+      ]);
       sendResponse(result);
     } else if (msg.type === "FEED_STATUS") {
       sendResponse((await loadBlocklist()).meta);
