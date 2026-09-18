@@ -20,6 +20,8 @@ The toolbar and popup use the supplied hook-and-envelope icon. Before the first 
 the latest analyzed email changes the hook to green (80–100), amber (50–79), or red (0–49).
 The toolbar tooltip includes the score. This is the latest result across all tabs, not a rating of the active page.
 
+Run the tests with `npm test` (Node's built-in runner, no dependencies to install).
+
 ## Security design (why the email can't hurt you through the extension)
 - **Nothing from the email is executed or fetched.** The content script only reads the DOM that Gmail has
   already sanitised (scripts stripped, images proxied). It converts it to a plain structured object

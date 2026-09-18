@@ -56,6 +56,21 @@ test("analysis updates the toolbar and popup result across score boundaries", as
   }
 });
 
+test("a failed toolbar update still returns the analysis to the banner", async () => {
+  const setIcon = globalThis.chrome.action.setIcon;
+  globalThis.chrome.action.setIcon = async () => { throw new Error("icon decode failed"); };
+  try {
+    const result = await new Promise((resolve) => {
+      onMessage({ type: "ANALYSE", settingsDmarc: false, email: { links: [{ href: "javascript:alert(1)" }] } }, {}, resolve);
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.score, 15);
+    assert.equal(result.level, "danger");
+  } finally {
+    globalThis.chrome.action.setIcon = setIcon;
+  }
+});
+
 test("installation uses Hamulus branding and neutral PNG icons", async () => {
   const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.meta.url)));
   assert.equal(manifest.name, "Hamulus");
