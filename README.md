@@ -17,8 +17,10 @@ Gmail selectors are the most battle-tested; Yahoo relies on `data-test-id`, Outl
 3. The popup (toolbar icon) shows blocklist freshness and lets you force a refresh.
 
 The toolbar and popup use the supplied hook-and-envelope icon. Before the first scan it is neutral;
-the latest analyzed email changes the hook to green (80–100), amber (50–79), or red (0–49).
-The toolbar tooltip includes the score. This is the latest result across all tabs, not a rating of the active page.
+the most recently scanned email changes the hook to green (80–100), amber (50–79), or red (0–49).
+The toolbar tooltip includes the score. It follows the last email the extension was asked to scan, across
+all tabs — not whichever analysis happens to finish first, and not a rating of the active page. Every
+message still gets its own banner with its own score.
 
 Run the tests with `npm test` (Node's built-in runner, no dependencies to install).
 

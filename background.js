@@ -78,19 +78,23 @@ async function dmarcPolicy(domain) {
 }
 
 // ---------- messaging ----------
+let latestScan = 0;
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg.type === "ANALYSE") {
+      const scan = ++latestScan;
       const [bl, br] = await Promise.all([loadBlocklist(), loadBrands()]);
       const senderDomain = (String(msg.email.sender?.email || "").match(/@([^>\s]+)/) || [])[1];
       const dmarc = msg.settingsDmarc === false ? "unknown" : await dmarcPolicy(senderDomain ? registrableDomain(senderDomain) : null);
       const result = analyse({ ...msg.email, dmarc }, { blocklist: bl, brands: br });
-      await chrome.storage.session?.set?.({ lastResult: { ...result, subject: msg.email.subject, sender: msg.email.sender } });
       sendResponse(result);
+      if (scan !== latestScan) return;
+      await chrome.storage.session?.set?.({ lastResult: { ...result, subject: msg.email.subject, sender: msg.email.sender } });
       await Promise.all([
         chrome.action.setIcon({ path: iconPaths(result.level) }),
         chrome.action.setTitle({ title: scoreTitle(result) }),
-      ]).catch(() => {});
+      ]).catch((e) => console.warn("toolbar update failed", e));
     } else if (msg.type === "FEED_STATUS") {
       sendResponse((await loadBlocklist()).meta);
     } else if (msg.type === "SYNC_NOW") {
