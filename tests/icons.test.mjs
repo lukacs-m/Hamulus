@@ -74,7 +74,7 @@ test("a failed toolbar update still returns the analysis to the banner, and is r
     assert.equal(result.score, 15);
     assert.equal(result.level, "danger");
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /toolbar update failed.*icon decode failed/);
+    assert.match(warnings[0], /could not publish latest result.*icon decode failed/);
   } finally {
     globalThis.chrome.action.setIcon = setIcon;
     console.warn = warn;
@@ -111,6 +111,28 @@ test("the last requested scan owns the toolbar even when an earlier one finishes
     assert.equal(action.path[32], `icons/${newest.level}-32.png`);
   } finally {
     globalThis.fetch = realFetch;
+  }
+});
+
+test("a failed lastResult write still updates the toolbar and answers the message once", async () => {
+  const set = globalThis.chrome.storage.session.set;
+  const warn = console.warn;
+  const warnings = [];
+  const responses = [];
+  console.warn = (...args) => warnings.push(args.join(" "));
+  globalThis.chrome.storage.session.set = async () => { throw new Error("session storage unavailable"); };
+  try {
+    const email = { text: "verify your account within 24 hours", links: [{ href: "http://example.com/", text: "example.com" }] };
+    onMessage({ type: "ANALYSE", settingsDmarc: false, email }, {}, (response) => responses.push(response));
+    await settled();
+    assert.deepEqual(responses.map((r) => r.score), [79]);
+    assert.match(action.title, /Hamulus - Last scanned email: 79\/100/);
+    assert.equal(action.path[32], "icons/caution-32.png");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /could not publish latest result.*session storage unavailable/);
+  } finally {
+    globalThis.chrome.storage.session.set = set;
+    console.warn = warn;
   }
 });
 
