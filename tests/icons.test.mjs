@@ -123,7 +123,9 @@ test("a failed lastResult write still updates the toolbar and answers the messag
   globalThis.chrome.storage.session.set = async () => { throw new Error("session storage unavailable"); };
   try {
     const email = { text: "verify your account within 24 hours", links: [{ href: "http://example.com/", text: "example.com" }] };
-    onMessage({ type: "ANALYSE", settingsDmarc: false, email }, {}, (response) => responses.push(response));
+    await new Promise((resolve) => {
+      onMessage({ type: "ANALYSE", settingsDmarc: false, email }, {}, (response) => { responses.push(response); resolve(); });
+    });
     await settled();
     assert.deepEqual(responses.map((r) => r.score), [79]);
     assert.match(action.title, /Hamulus - Last scanned email: 79\/100/);
