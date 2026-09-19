@@ -22,7 +22,8 @@ The toolbar tooltip includes the score. It follows the last email the extension 
 all tabs — not whichever analysis happens to finish first, and not a rating of the active page. Every
 message still gets its own banner with its own score.
 
-Run the tests with `npm test` (Node's built-in runner, no dependencies to install).
+Run the tests with `npm test` (Node's built-in runner, no dependencies to install). Pull requests
+re-run them together with a JavaScript syntax check; see `.github/workflows/tests.yml`.
 
 ## Security design (why the email can't hurt you through the extension)
 - **Nothing from the email is executed or fetched.** The content script only reads the DOM that Gmail has
