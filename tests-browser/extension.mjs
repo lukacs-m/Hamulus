@@ -74,6 +74,8 @@ try {
   }
   await popup.locator("#dns").check();
   await popup.waitForFunction(() => document.getElementById("settings-status").textContent.includes("Saved"));
+  assert.equal(await popup.locator("#dns").isChecked(), true);
+  assert.match(await popup.locator("#settings-status").textContent(), /may perform a DNS lookup/);
   await page.locator(".a3s").evaluate(el => { el.textContent = "Changed fixture to trigger an opted-in scan."; });
   await page.waitForTimeout(500);
   result = await worker.evaluate(async () => (await chrome.storage.session.get("lastResult")).lastResult);
@@ -81,6 +83,7 @@ try {
   assert.equal((await worker.evaluate(() => requests.filter(url => url.includes("dns-query")))).length, 1);
   await popup.locator("#dns").uncheck();
   await popup.waitForFunction(() => document.getElementById("settings-status").textContent.includes("will not send"));
+  assert.equal(await popup.locator("#dns").isChecked(), false);
   await page.locator(".a3s").evaluate(el => el.remove());
   await page.waitForTimeout(300);
   assert.equal((await worker.evaluate(async () => (await chrome.storage.session.get("lastResult")).lastResult)).status, "error");

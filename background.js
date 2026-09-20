@@ -71,7 +71,7 @@ function loadBlocklist() {
       let entries = [];
       let error = data?.error || null;
       try { if (data) entries = cleanEntries(feed, data.entries); }
-      catch { error = "Stored feed data is unavailable or exceeds supported limits."; }
+      catch { error = error || "Stored feed data is unavailable or exceeds supported limits."; }
       meta[feed.id] = { name: feed.name, count: entries.length, updatedAt: data?.updatedAt || null, error };
       for (const entry of entries) {
         if (feed.kind === "url") {
@@ -99,10 +99,15 @@ function loadBrands() {
     .then(JSON.parse).catch(() => { brands = null; return null; });
   return brands;
 }
+async function savedDnsEnabled() {
+  try { return (await chrome.storage.local.get("dnsEnabled")).dnsEnabled === true; }
+  catch { return false; }
+}
+// Scans additionally refuse consent that changed while they were reading it; a settings answer
+// must not, because the change event it waits on is the one its own write just caused.
 async function dnsEnabled() {
   const epoch = settingsEpoch;
-  try { return (await chrome.storage.local.get("dnsEnabled")).dnsEnabled === true && epoch === settingsEpoch; }
-  catch { return false; }
+  return await savedDnsEnabled() && epoch === settingsEpoch;
 }
 async function dmarcPolicy(domain) {
   if (!domain || isIpHost(domain) || !/^(?:[a-z0-9-]+\.)+[a-z0-9-]+$/.test(domain) || domain.length > 253) return "unknown";
@@ -202,11 +207,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       Object.assign(result, { status: "complete", subject: email.subject, sender: email.sender });
       sendResponse(result);
       publish(scan, result, requester);
-    } else if (msg.type === "GET_SETTINGS") sendResponse({ dnsEnabled: await dnsEnabled() });
+    } else if (msg.type === "GET_SETTINGS") sendResponse({ dnsEnabled: await savedDnsEnabled() });
     else if (msg.type === "SET_DNS") {
       if (typeof msg.enabled !== "boolean") throw new Error("Invalid DNS preference.");
       await chrome.storage.local.set({ dnsEnabled: msg.enabled });
-      sendResponse({ dnsEnabled: await dnsEnabled() });
+      sendResponse({ dnsEnabled: await savedDnsEnabled() });
     } else {
       if (msg.type === "SYNC_NOW") await syncAll();
       sendResponse(feedStatus((await loadBlocklist()).meta));

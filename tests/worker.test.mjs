@@ -6,7 +6,7 @@ import { scoreTitle } from "../lib/icons.js";
 const brands = await readFile(new URL("../data/brands.json", import.meta.url), "utf8");
 let sequence = 0;
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-async function harness({ dns, entries, updatedAt = Date.now(), localGet, localSet, network, session = {}, sessionGet } = {}) {
+async function harness({ dns, entries, updatedAt = Date.now(), localGet, localSet, network, session = {}, sessionGet, deferChange } = {}) {
   let listener, changed;
   const stored = Object.fromEntries(FEEDS.map(feed => [`feed:${feed.id}`, { entries: entries || [feed.kind === "url" ? "https://bad.test/" : "bad.test"], updatedAt }]));
   if (dns !== undefined) stored.dnsEnabled = dns;
@@ -18,7 +18,14 @@ async function harness({ dns, entries, updatedAt = Date.now(), localGet, localSe
     alarms: { onAlarm: { addListener() {} }, create() {} },
     storage: { onChanged: { addListener: fn => { changed = fn; } }, local: {
       get: async key => { if (localGet) await localGet(key, stored); return stored; },
-      set: async values => { if (localSet) await localSet(values); Object.assign(stored, values); changed(Object.fromEntries(Object.entries(values).map(([k,v]) => [k, { newValue: v }])), "local"); },
+      set: async values => {
+        if (localSet) await localSet(values);
+        Object.assign(stored, values);
+        const event = Object.fromEntries(Object.entries(values).map(([k,v]) => [k, { newValue: v }]));
+        // Chrome answers set() before it dispatches onChanged; deferChange reproduces that ordering.
+        if (deferChange) setTimeout(() => changed(event, "local"), 0);
+        else changed(event, "local");
+      },
     }, session: {
       get: async () => { if (sessionGet) await sessionGet(); return session; },
       set: async value => { Object.assign(session, value); results.push(value.lastResult); },
@@ -303,4 +310,32 @@ test("a failed popup request does not suppress an email scan already in flight",
   await tick(); await tick();
   assert.equal(h.session.lastResult.status, "complete");
   assert.equal(h.session.lastOwner.message, "m1");
+});
+
+test("a saved DNS preference is confirmed from the store, not refused by its own change event", async () => {
+  const h = await harness({ deferChange: true, localGet: () => new Promise(resolve => setTimeout(resolve, 2)) });
+  assert.equal((await h.send({ type: "SET_DNS", enabled: true })).dnsEnabled, true);
+  assert.equal(h.stored.dnsEnabled, true);
+  assert.equal((await h.send({ type: "GET_SETTINGS" })).dnsEnabled, true);
+  assert.equal((await h.send({ type: "SET_DNS", enabled: false })).dnsEnabled, false);
+  assert.equal(h.stored.dnsEnabled, false);
+  assert.equal((await h.send({ type: "GET_SETTINGS" })).dnsEnabled, false);
+});
+
+test("an unreadable preference store reports DNS off from every settings surface", async () => {
+  const h = await harness({ dns: true, localGet: key => { if (key === "dnsEnabled") throw new Error("storage unavailable"); } });
+  assert.equal((await h.send({ type: "SET_DNS", enabled: true })).dnsEnabled, false);
+  assert.equal((await h.send({ type: "GET_SETTINGS" })).dnsEnabled, false);
+  assert.equal((await h.scan()).coverage.dns, "disabled");
+  assert.equal(h.calls.filter(url => url.includes("dns-query")).length, 0);
+});
+
+test("an unusable feed cache reports the recorded refresh cause when it has one", async () => {
+  const h = await harness({ entries: [] });
+  await chrome.storage.local.set({ "feed:urlhaus": { kind: "url", entries: [], error: "HTTP 401", updatedAt: null } });
+  const feeds = await h.send({ type: "FEED_STATUS" });
+  assert.equal(feeds.urlhaus.error, "HTTP 401");
+  assert.equal(feeds.urlhaus.state, "unavailable");
+  const withoutCause = Object.entries(feeds).find(([id]) => id !== "urlhaus")[1];
+  assert.match(withoutCause.error, /Stored feed data is unavailable or exceeds supported limits/);
 });
