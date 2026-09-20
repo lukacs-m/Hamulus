@@ -2,6 +2,7 @@
 const { init, q, emailFrom } = window.__emailShield;
 init({
   message: "div[data-message-id]",
+  id: (msg) => msg.getAttribute("data-message-id"),
   body: ".a3s",
   sender: (msg) => { const el = q(msg, ".gD"); return { name: el?.getAttribute("name") || "", email: el?.getAttribute("email") || "" }; },
   subject: () => (document.querySelector("h2.hP")?.textContent || "").trim(),

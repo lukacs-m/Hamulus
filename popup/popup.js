@@ -22,7 +22,8 @@ function renderFeeds(meta) {
 function renderResult(result) {
   el("icon").src = chrome.runtime.getURL(iconPaths(Hamulus.iconLevel(result))[128]);
   el("last").className = `last ${Hamulus.iconLevel(result)}`;
-  el("heading").textContent = Hamulus.heading(result) + (result?.score == null ? "" : ` (${result.score}/100)`);
+  const score = Hamulus.scoreLabel(result);
+  el("heading").textContent = Hamulus.heading(result) + (score ? ` (${score})` : "");
   el("subject").textContent = result ? Hamulus.text(result.subject || "(no subject)") : "";
   el("sender").textContent = Hamulus.text(result?.sender?.email || "");
   el("time").textContent = result?.analysedAt ? new Date(result.analysedAt).toLocaleString() : "";

@@ -223,13 +223,17 @@ try {
     assert.equal(unread.coverage.bodyUnavailable, true);
     assert.deepEqual(unread.attachments, ["invoice.pdf"]);
     assert.equal(unread.text, "");
-    await answer(page, pending, { status: "complete", score: 100, level: "safe", findings: [], coverage: { incomplete: true, notes: ["The message body could not be read."] } });
+    await answer(page, pending, { status: "complete", score: 100, level: "safe", findings: [], coverage: { incomplete: true, bodyUnavailable: true, notes: ["The message body could not be read."] } });
     assert.doesNotMatch(await banner(page), /No strong warning signs/);
     assert.match(await banner(page), /Incomplete assessment/);
+    assert.doesNotMatch(await banner(page), /100\/100/);
     await page.locator("iframe").evaluate(el => { el.srcdoc = "<p>The real message arrived</p>"; });
-    const populated = await summary(page, (await waitScans(page, 2)).at(-1));
+    const index = (await waitScans(page, 2)).at(-1);
+    const populated = await summary(page, index);
     assert.notEqual(populated.coverage.bodyUnavailable, true);
     assert.match(populated.text, /The real message arrived/);
+    await answer(page, index, { status: "complete", score: 70, level: "caution", findings: [], coverage: { incomplete: true, notes: [] } });
+    assert.match(await banner(page), /Incomplete assessment - be careful with this email \(70\/100\)/);
     await page.close();
   });
 } finally { await browser.close(); }

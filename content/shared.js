@@ -9,7 +9,9 @@ window.__emailShield = (() => {
   let debounce;
   let sequence = 0;
   const bodyOf = (msg, ad) => typeof ad.body === "function" ? ad.body(msg) : msg.querySelector(ad.body);
-  const idOf = msg => {
+  const idOf = (msg, ad) => {
+    const stable = ad.id?.(msg);
+    if (stable) return String(stable).slice(0, 100);
     if (!identities.has(msg)) identities.set(msg, `${pageToken}:${++sequence}`);
     return identities.get(msg);
   };
@@ -56,7 +58,7 @@ window.__emailShield = (() => {
       if (!email) {
         paint({ status: "error", error: "Message body is unavailable. It will be checked again when it loads." });
         try {
-          chrome.runtime.sendMessage({ type: "ANALYSE", email: { messageId: idOf(msg), subject: String(ad.subject(msg) || "").slice(0, 300), coverage: { unavailable: true } } }, () => { void chrome.runtime.lastError; });
+          chrome.runtime.sendMessage({ type: "ANALYSE", email: { messageId: idOf(msg, ad), subject: String(ad.subject(msg) || "").slice(0, 300), coverage: { unavailable: true } } }, () => { void chrome.runtime.lastError; });
         } catch {}
         continue;
       }
@@ -167,7 +169,7 @@ window.__emailShield = (() => {
     if (attachments.length > limits.attachments) truncated = true;
     const replyTo = String(ad.replyTo?.(msg) || "");
     const result = {
-      messageId: idOf(msg),
+      messageId: idOf(msg, ad),
       sender: { name: clip(sender.name, 200), email: sender.email?.length > 320 ? (truncated = true, "") : String(sender.email || "") },
       subject: clip(ad.subject(msg), 300), replyTo: replyTo.length > 320 ? (truncated = true, "") : replyTo,
       text, links, images, forms, attachments: attachments.slice(0, limits.attachments).map(name => clip(name, 200)),
@@ -195,7 +197,8 @@ window.__emailShield = (() => {
     `;
     root.append(style);
     const box = Hamulus.append(root, "div", "", `box ${Hamulus.iconLevel(result)}`);
-    const heading = Hamulus.append(box, "h2", `Hamulus - ${Hamulus.heading(result)}${result.score == null ? "" : ` (${result.score}/100)`}`);
+    const score = Hamulus.scoreLabel(result);
+    const heading = Hamulus.append(box, "h2", `Hamulus - ${Hamulus.heading(result)}${score ? ` (${score})` : ""}`);
     heading.setAttribute("role", "status");
     Hamulus.append(box, "p", Hamulus.warning, "warning");
     if (result.error) {

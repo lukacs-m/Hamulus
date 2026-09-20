@@ -93,6 +93,9 @@ while ordinary provider links remain recognized. Each anchor is checked even whe
 - Selectors for all four clients are undocumented and change occasionally; use `probe()` (above) to fix them.
 - Proton renders the body in a sandboxed same-origin iframe; the adapter reads `iframe.contentDocument`.
   An inaccessible/loading body is reported as unavailable; no access restrictions are bypassed.
+- Every node matching a client's message selector that has no readable body gets its own "Scan unavailable"
+  banner. In a collapsed conversation this may mean one banner per unexpanded message; the collapsed-thread
+  DOM of the live clients has not been verified manually, so this is untested against real multi-message threads.
 - Outlook's aria-labels are localised; EN and FR are covered, add your locale to `outlook.js` if needed.
 - Reply-To is not visible in Gmail's DOM without "Show details"; hook it there if you need it.
 - Registrable-domain logic uses a short embedded suffix list, not the full Public Suffix List. This can

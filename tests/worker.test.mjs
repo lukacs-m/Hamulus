@@ -2,15 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { FEEDS } from "../lib/feeds.js";
+import { scoreTitle } from "../lib/icons.js";
 const brands = await readFile(new URL("../data/brands.json", import.meta.url), "utf8");
 let sequence = 0;
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-async function harness({ dns, entries, updatedAt = Date.now(), localGet, network } = {}) {
+async function harness({ dns, entries, updatedAt = Date.now(), localGet, network, session = {}, sessionGet } = {}) {
   let listener, changed;
   const stored = Object.fromEntries(FEEDS.map(feed => [`feed:${feed.id}`, { entries: entries || [feed.kind === "url" ? "https://bad.test/" : "bad.test"], updatedAt }]));
   if (dns !== undefined) stored.dnsEnabled = dns;
-  const calls = [], results = [];
-  const mail = { id: "test", url: "https://mail.google.com/mail/", tab: { id: 1 }, frameId: 0 };
+  const calls = [], results = [], icons = [];
+  const mail = { id: "test", url: "https://mail.google.com/mail/", tab: { id: 1 }, frameId: 0, documentId: "doc-1" };
   const popup = { id: "test", url: "chrome-extension://test/popup/popup.html" };
   globalThis.chrome = {
     runtime: { id: "test", getURL: path => `chrome-extension://test/${path}`, onMessage: { addListener: fn => { listener = fn; } }, onInstalled: { addListener() {} }, onStartup: { addListener() {} } },
@@ -18,8 +19,11 @@ async function harness({ dns, entries, updatedAt = Date.now(), localGet, network
     storage: { onChanged: { addListener: fn => { changed = fn; } }, local: {
       get: async key => { if (localGet) await localGet(key, stored); return stored; },
       set: async values => { Object.assign(stored, values); changed(Object.fromEntries(Object.entries(values).map(([k,v]) => [k, { newValue: v }])), "local"); },
-    }, session: { set: async value => { results.push(value.lastResult); } } },
-    action: { setIcon: async () => {}, setTitle: async () => {} },
+    }, session: {
+      get: async () => { if (sessionGet) await sessionGet(); return session; },
+      set: async value => { Object.assign(session, value); results.push(value.lastResult); },
+    } },
+    action: { setIcon: async ({ path }) => { icons.push(path[32]); }, setTitle: async () => {} },
   };
   globalThis.fetch = async (url, options) => {
     calls.push(String(url));
@@ -28,7 +32,7 @@ async function harness({ dns, entries, updatedAt = Date.now(), localGet, network
   };
   await import(`../background.js?case=${sequence++}`);
   return {
-    stored, calls, results,
+    stored, calls, results, icons, session, mail,
     send: (message, sender = popup) => new Promise(resolve => listener(message, sender, resolve)),
     scan: (email = {}, sender = mail) => new Promise(resolve => listener({ type: "ANALYSE", settingsDmarc: true, email: { sender: { email: "person@sender.test" }, ...email } }, sender, resolve)),
   };
@@ -160,4 +164,105 @@ test("an unread body is assessed as incomplete metadata, never green and never w
   const risky = await h.scan({ messageId: "page:1", attachments: ["invoice.pdf.html"], coverage: { bodyUnavailable: true } });
   assert.ok(risky.findings.some(f => f.id === "RISKY_ATTACHMENT"));
   assert.equal(risky.coverage.incomplete, true);
+});
+
+test("the owning message still clears shared success after a worker restart", async () => {
+  const first = await harness();
+  await first.scan({ messageId: "m1", text: "Hello" });
+  await tick(); await tick();
+  assert.equal(first.session.lastResult.status, "complete");
+
+  const restarted = await harness({ session: first.session });
+  assert.equal((await restarted.scan({ messageId: "m1", coverage: { unavailable: true } })).status, "error");
+  await tick(); await tick();
+  assert.equal(restarted.session.lastResult.status, "error");
+  assert.equal(restarted.icons.at(-1), "icons/neutral-32.png");
+});
+
+test("after a restart only the owning tab, document or message may erase the shared result", async () => {
+  const first = await harness();
+  await first.scan({ messageId: "m1", text: "Hello" });
+  await tick(); await tick();
+
+  const sibling = await harness({ session: first.session });
+  assert.equal((await sibling.scan({ messageId: "m2", coverage: { unavailable: true } })).status, "error");
+  await tick(); await tick();
+  assert.equal(sibling.session.lastResult.status, "complete");
+
+  const otherTab = await harness({ session: first.session });
+  await otherTab.scan({ messageId: "m1", coverage: { unavailable: true } }, { ...otherTab.mail, tab: { id: 2 }, documentId: "doc-9" });
+  await tick(); await tick();
+  assert.equal(otherTab.session.lastResult.status, "complete");
+
+  const reloaded = await harness({ session: first.session });
+  await reloaded.scan({ messageId: "fresh-page:1", coverage: { unavailable: true } }, { ...reloaded.mail, documentId: "doc-2" });
+  await tick(); await tick();
+  assert.equal(reloaded.session.lastResult.status, "error");
+});
+
+test("unreadable state with no recoverable owner clears rather than keeping a stale result", async () => {
+  const orphaned = { lastResult: { status: "complete", score: 100, level: "safe", coverage: {} } };
+  const h = await harness({ session: orphaned });
+  await h.scan({ messageId: "m1", coverage: { unavailable: true } });
+  await tick(); await tick();
+  assert.equal(h.session.lastResult.status, "error");
+});
+
+test("competing first requests keep their order while ownership is still being restored", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const seeded = { lastResult: { status: "complete", score: 100, level: "safe", coverage: {} }, lastOwner: { tab: 1, document: "doc-1", message: "m1" } };
+  const h = await harness({ session: seeded, sessionGet: () => gate });
+  const readable = h.scan({ messageId: "m2", text: "Hello" });
+  const stranger = h.scan({ messageId: "m3", coverage: { unavailable: true } });
+  release();
+  const [good, bad] = await Promise.all([readable, stranger]);
+  assert.equal(good.status, "complete");
+  assert.equal(bad.status, "error");
+  await tick(); await tick(); await tick();
+  assert.equal(h.session.lastResult.status, "complete");
+  assert.equal(h.session.lastOwner.message, "m2");
+});
+
+test("a message whose body was never read is never given a numeric score", async () => {
+  const h = await harness();
+  const harmless = await h.scan({ messageId: "m1", attachments: ["invoice.pdf"], coverage: { bodyUnavailable: true } });
+  assert.equal(harmless.coverage.bodyUnavailable, true);
+  assert.equal(globalThis.Hamulus.scoreLabel(harmless), null);
+  assert.match(scoreTitle(harmless), /Not scored/);
+  assert.doesNotMatch(scoreTitle(harmless), /100\/100/);
+
+  const risky = await h.scan({ messageId: "m1", attachments: ["invoice.pdf.html"], coverage: { bodyUnavailable: true } });
+  assert.ok(risky.findings.some(f => f.id === "RISKY_ATTACHMENT"));
+  assert.equal(globalThis.Hamulus.scoreLabel(risky), null);
+  assert.match(globalThis.Hamulus.heading(risky), /Incomplete assessment - be careful with this email/);
+
+  const readable = await h.scan({ messageId: "m1", text: "Now the body is here" });
+  assert.equal(readable.coverage.bodyUnavailable, false);
+  assert.equal(globalThis.Hamulus.scoreLabel(readable), `${readable.score}/100`);
+  assert.match(scoreTitle(readable), new RegExp(`${readable.score}/100`));
+});
+
+test("an invalidation supersedes scans requested before it but not ones requested after", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = await harness({ localGet: key => Array.isArray(key) ? gate : undefined });
+  const inflight = h.scan({ messageId: "m1", text: "Hello" });
+  await tick();
+  await h.scan({ messageId: "m1", coverage: { unavailable: true } });
+  await tick(); await tick();
+  assert.equal(h.session.lastResult.status, "error");
+  release();
+  await inflight;
+  await tick(); await tick();
+  assert.equal(h.session.lastResult.status, "error");
+
+  const later = await harness();
+  const pending = later.scan({ messageId: "m1", text: "Hello" });
+  await later.scan({ messageId: "m1", coverage: { unavailable: true } });
+  await tick();
+  assert.equal((await later.scan({ messageId: "m1", text: "Body is back" })).status, "complete");
+  await pending;
+  await tick(); await tick();
+  assert.equal(later.session.lastResult.status, "complete");
 });

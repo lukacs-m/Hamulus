@@ -9,8 +9,17 @@ let brands = null;
 let blocklist = null;
 let syncing = null;
 let latestScan = 0;
-let latestOwner = "";
+let invalidatedThrough = 0;
+let owner;
 let publishing = Promise.resolve();
+// chrome.storage.session and the toolbar survive MV3 worker termination, so the owner of the
+// published result must be restored too; an unreadable owner is the only thing allowed to erase it.
+const restoreOwner = Promise.resolve()
+  .then(() => chrome.storage.session.get("lastOwner"))
+  .then(stored => { if (owner === undefined) owner = stored?.lastOwner ?? null; })
+  .catch(() => { if (owner === undefined) owner = null; });
+const ownedBy = (current, requester) => !current
+  || (current.tab === requester.tab && (current.document !== requester.document || current.message === requester.message));
 let settingsEpoch = 0;
 const dnsCache = new Map();
 const dnsRequests = new Map();
@@ -123,16 +132,29 @@ async function dmarcPolicy(domain) {
   dnsRequests.set(domain, { controller, promise });
   return promise;
 }
-function publish(scan, result) {
+function publish(scan, result, nextOwner) {
   publishing = publishing.then(async () => {
-    if (scan !== latestScan) return;
-    const outcomes = await Promise.allSettled([
-      chrome.storage.session.set({ lastResult: result }),
-      chrome.action.setIcon({ path: iconPaths(Hamulus.iconLevel(result)) }),
-      chrome.action.setTitle({ title: scoreTitle(result) }),
-    ]);
-    for (const outcome of outcomes) if (outcome.status === "rejected") console.warn("could not publish latest result", outcome.reason);
+    if (scan !== latestScan || scan <= invalidatedThrough) return;
+    owner = nextOwner;
+    await write(result, nextOwner);
   }).catch(error => console.warn("could not publish latest result", error));
+}
+function invalidate(requester, result, requestedAt) {
+  publishing = publishing.then(async () => {
+    await restoreOwner;
+    if (!ownedBy(owner, requester)) return;
+    owner = null;
+    invalidatedThrough = Math.max(invalidatedThrough, requestedAt);
+    await write(result, null);
+  }).catch(error => console.warn("could not publish latest result", error));
+}
+async function write(result, nextOwner) {
+  const outcomes = await Promise.allSettled([
+    chrome.storage.session.set({ lastResult: result, lastOwner: nextOwner }),
+    chrome.action.setIcon({ path: iconPaths(Hamulus.iconLevel(result)) }),
+    chrome.action.setTitle({ title: scoreTitle(result) }),
+  ]);
+  for (const outcome of outcomes) if (outcome.status === "rejected") console.warn("could not publish latest result", outcome.reason);
 }
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const kind = callerKind(sender, chrome.runtime);
@@ -144,16 +166,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   let email = null;
   try { if (msg.type === "ANALYSE") email = validateEmail(msg.email); } catch {}
-  let scan = null;
-  if (msg.type === "ANALYSE" && (!email?.coverage.unavailable || email.messageId === latestOwner)) {
-    latestOwner = email?.messageId || "";
-    scan = ++latestScan;
-  }
+  const requester = { tab: sender.tab?.id ?? null, document: sender.documentId || "", message: email?.messageId || "" };
+  const scan = msg.type === "ANALYSE" && !email?.coverage.unavailable ? ++latestScan : null;
+  const requestedAt = latestScan;
   (async () => {
     if (msg.type === "ANALYSE") {
       if (!email) throw new Error("Invalid email summary.");
       if (email.coverage.unavailable) throw new Error("Message body is unavailable.");
-      publish(scan, { status: "scanning", subject: email.subject, sender: email.sender, analysedAt: Date.now() });
+      publish(scan, { status: "scanning", subject: email.subject, sender: email.sender, analysedAt: Date.now() }, requester);
       const [bl, br] = await Promise.all([loadBlocklist(), loadBrands()]);
       const enabled = await dnsEnabled();
       const bodyUnread = email.coverage.bodyUnavailable;
@@ -171,10 +191,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       notes.push(!enabled ? "Sender-domain DNS lookup is disabled. No sender-domain metadata was sent by this scan."
         : bodyUnread ? "Sender-domain DNS lookup was skipped because the message body could not be read. No sender-domain metadata was sent by this scan."
         : `Optional sender-domain DNS lookup: ${dmarc}. This does not authenticate this email.`);
-      result.coverage = { incomplete: result.coverage.incomplete || !!unavailable.length || !br || email.coverage.truncated || !email.sender.email || bodyUnread, notes, feeds, dns: !enabled ? "disabled" : bodyUnread ? "skipped" : dmarc };
+      result.coverage = { incomplete: result.coverage.incomplete || !!unavailable.length || !br || email.coverage.truncated || !email.sender.email || bodyUnread, bodyUnavailable: bodyUnread, notes, feeds, dns: !enabled ? "disabled" : bodyUnread ? "skipped" : dmarc };
       Object.assign(result, { status: "complete", subject: email.subject, sender: email.sender });
       sendResponse(result);
-      publish(scan, result);
+      publish(scan, result, requester);
     } else if (msg.type === "GET_SETTINGS") sendResponse({ dnsEnabled: await dnsEnabled() });
     else if (msg.type === "SET_DNS") {
       if (typeof msg.enabled !== "boolean") throw new Error("Invalid DNS preference.");
@@ -187,7 +207,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   })().catch(() => {
     const result = { status: "error", error: "The scan could not be completed. Retry from the email banner.", subject: email?.subject || "", sender: email?.sender || {}, analysedAt: Date.now() };
     sendResponse(result);
-    if (scan != null) publish(scan, result);
+    if (scan != null) publish(scan, result, requester);
+    else invalidate(requester, result, requestedAt);
   });
   return true;
 });

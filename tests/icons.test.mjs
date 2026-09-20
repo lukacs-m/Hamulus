@@ -20,7 +20,7 @@ globalThis.chrome = {
   storage: {
     onChanged: { addListener() {} },
     local: { get: async () => local },
-    session: { set: async (value) => { stored = value; } },
+    session: { get: async () => stored, set: async (value) => { stored = value; } },
   },
   action: {
     setIcon: async ({ path }) => { action.path = path; },
@@ -178,4 +178,24 @@ test("failed publishing waits for other cosmetic operations before publishing a 
     release(); await settled();
     chrome.storage.session.set = set; chrome.action.setIcon = setIcon; console.warn = warn;
   }
+});
+
+test("incomplete coverage keeps the risk cue and hides only unassessed-body scores", async () => {
+  const { scoreTitle } = await import("../lib/icons.js");
+  const base = { status: "complete", findings: [] };
+  const caution = { ...base, score: 70, level: "caution", coverage: { incomplete: true } };
+  assert.equal(Hamulus.heading(caution), "Incomplete assessment - be careful with this email");
+  assert.equal(Hamulus.scoreLabel(caution), "70/100");
+  assert.match(scoreTitle(caution), /70\/100/);
+
+  const danger = { ...base, score: 15, level: "danger", coverage: { incomplete: true } };
+  assert.equal(Hamulus.heading(danger), "Incomplete assessment - strong warning signs detected");
+
+  const complete = { ...base, score: 70, level: "caution", coverage: { incomplete: false } };
+  assert.equal(Hamulus.heading(complete), "Be careful with this email");
+
+  const unread = { ...base, score: 100, level: "safe", coverage: { incomplete: true, bodyUnavailable: true } };
+  assert.equal(Hamulus.scoreLabel(unread), null);
+  assert.match(scoreTitle(unread), /Not scored/);
+  assert.doesNotMatch(scoreTitle(unread), /100\/100/);
 });

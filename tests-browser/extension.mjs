@@ -51,12 +51,19 @@ try {
     ["caution", { status: "complete", score: 60, level: "caution", findings: [{ title: "Link text and destination disagree", detail: "Displayed text names paypal.com; destination is other.test." }], linkEvidence: [{ text: "PayPal\u202E <img src=x>", href: "https://other.test/" + "long/".repeat(30), hostname: "other.test", reasons: ["Brand text differs from destination"] }], coverage: { notes: [] } }],
     ["danger", { status: "complete", score: 15, level: "danger", findings: [{ title: "Link is on a phishing blocklist", detail: "bad.test matched a locally stored feed." }], coverage: { notes: [] } }],
     ["incomplete", { status: "complete", score: 100, level: "safe", findings: [], coverage: { incomplete: true, notes: ["Blocklist coverage is incomplete. Cached entries were still checked."] } }],
+    ["metadata", { status: "complete", score: 100, level: "safe", findings: [], coverage: { incomplete: true, bodyUnavailable: true, notes: ["The message body could not be read. Only header and attachment details were assessed; the message content is unassessed."] } }],
     ["error", { status: "error", error: "The scan could not be completed. Retry from the email banner." }],
     ["scanning", { status: "scanning" }],
   ];
   for (const [name, state] of visualCases) {
     await worker.evaluate(async state => chrome.storage.session.set({ lastResult: { ...state, subject: "Fixture subject", sender: { email: "alex@example.test" }, analysedAt: Date.now() } }), state);
-    await popup.waitForFunction(expected => document.getElementById("icon").getAttribute("src").includes(expected), ["incomplete", "error", "scanning"].includes(name) ? "neutral-128" : `${name}-128`);
+    await popup.waitForFunction(expected => document.getElementById("icon").getAttribute("src").includes(expected), ["incomplete", "metadata", "error", "scanning"].includes(name) ? "neutral-128" : `${name}-128`);
+    if (name === "metadata") {
+      await popup.waitForFunction(() => document.getElementById("evidence").textContent.includes("content is unassessed"));
+      const headingText = await popup.locator("#heading").textContent();
+      assert.match(headingText, /Incomplete assessment/);
+      assert.doesNotMatch(headingText, /100\/100/, "an unread body must not show a score in the popup");
+    }
     if (name === "caution") {
       await popup.locator("summary").click();
       assert.equal(await popup.locator("#evidence a, #evidence img").count(), 0);
@@ -80,7 +87,7 @@ try {
   await popup.locator("#sync").click();
   await popup.waitForFunction(() => document.getElementById("feed-status").textContent.includes("Refresh finished"));
   assert.match(await popup.locator("#feeds").textContent(), /refresh failed/);
-  console.log("PASS installed extension: content script, packaged catalogue/CSP, popup six states, DNS opt-in/out, feed failure recovery");
+  console.log("PASS installed extension: content script, packaged catalogue/CSP, popup seven states, DNS opt-in/out, feed failure recovery");
 } finally {
   await context?.close();
   await rm(profile, { recursive: true, force: true });
