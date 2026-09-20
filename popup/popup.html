@@ -4,29 +4,41 @@
 <meta charset="utf-8">
 <title>Hamulus</title>
 <style>
-  body { width: 340px; margin: 0; padding: 16px; font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; color: #222; }
-  h1 { display: flex; align-items: center; gap: 8px; font-size: 15px; margin: 0 0 12px; }
-  .last { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 14px; }
-  .last .score { font-size: 30px; font-weight: 700; }
-  .last[hidden] { display: none; }
-  .last.safe { background:#eef7ee } .last.caution { background:#fff6e0 } .last.danger { background:#fdeaea }
-  .small { font-size: 12px; color: #666; }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  td { padding: 4px 0; border-top: 1px solid #eee; vertical-align: top; }
-  td.n { text-align: right; white-space: nowrap; }
-  .err { color: #b71c1c; }
-  button { margin-top: 12px; padding: 7px 12px; border-radius: 6px; border: 1px solid #bbb; background: #fafafa; cursor: pointer; }
+  body { width: 360px; margin: 0; padding: 16px; font: 14px/1.45 -apple-system, "Segoe UI", sans-serif; color: #222; }
+  h1 { display: flex; align-items: center; gap: 8px; font-size: 18px; margin: 0 0 12px; }
+  h2 { font-size: 15px; margin: 0 0 8px; } h3 { font-size: 14px; }
+  .last { padding: 12px; border-radius: 8px; border: 1px solid #bbb; margin: 8px 0 14px; background: #f5f5f5; }
+  .last.safe { background: #eef7ee; } .last.caution { background: #fff6e0; } .last.danger { background: #fdeaea; }
+  .small, .warning { font-size: 12px; } .small { color: #555; }
+  p { margin: 8px 0; } p, td, li, h2 { overflow-wrap: anywhere; unicode-bidi: plaintext; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  td { padding: 5px 0; border-top: 1px solid #ddd; vertical-align: top; } td.n { text-align: right; padding-left: 8px; }
+  .err { color: #a31b1b; } .evidence { border-top: 1px solid #bbb; }
+  button { margin: 10px 0; padding: 7px 12px; border-radius: 6px; border: 1px solid #aaa; background: #fafafa; cursor: pointer; }
+  summary { cursor: pointer; } :focus-visible { outline: 3px solid #1766b3; outline-offset: 3px; }
+  fieldset { border: 1px solid #bbb; border-radius: 6px; margin: 14px 0 0; padding: 10px; }
 </style>
 </head>
 <body>
   <h1><img id="icon" src="../icons/neutral-128.png" width="32" height="32" alt="">Hamulus</h1>
-  <div id="last" class="last" hidden>
-    <div class="score" id="score"></div>
-    <div><div id="subject"></div><div class="small" id="sender"></div></div>
-  </div>
-  <div class="small">Blocklists (matched locally, nothing leaves your browser)</div>
-  <table id="feeds"></table>
+  <p class="small">Latest requested scan across all tabs. Each email has its own banner.</p>
+  <section id="last" class="last" aria-live="polite">
+    <h2 id="heading">No email scanned yet</h2>
+    <p id="subject"></p><p id="sender" class="small"></p><p id="time" class="small"></p>
+  </section>
+  <p id="warning" class="warning"></p>
+  <details id="details" hidden><summary>Assessment details and evidence</summary><div id="evidence"></div></details>
+  <fieldset>
+    <legend>Optional sender-domain lookup</legend>
+    <label><input id="dns" type="checkbox" disabled aria-describedby="dns-info"> Enable sender-domain DNS lookup</label>
+    <p id="dns-info" class="small">Off by default. Enabling sends the sender domain (never the subject, body or links) to Cloudflare DNS. The resolver and potentially the domain owner can observe this lookup. A DMARC policy does not authenticate this email. This preference is saved on this device.</p>
+    <p id="settings-status" class="small" role="status"></p>
+  </fieldset>
+  <h2 style="margin-top:16px">Blocklist coverage</h2>
+  <p class="small">Matches are local. Refreshing downloads feeds from their providers.</p>
+  <table><tbody id="feeds"></tbody></table>
   <button id="sync">Refresh blocklists now</button>
+  <p id="feed-status" class="small" role="status"></p>
   <script type="module" src="popup.js"></script>
 </body>
 </html>

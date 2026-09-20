@@ -12,9 +12,9 @@ init({
   body: (msg) => {
     const f = iframeOf(msg);
     const doc = f?.contentDocument;              // null while loading or if Proton drops allow-same-origin
-    return doc?.body && doc.body.childElementCount ? doc.body : null;
+    return doc?.body || null;
   },
-  mount: (msg) => iframeOf(msg)?.parentElement?.querySelector("[data-email-shield]") ? null : iframeOf(msg),
+  mount: iframeOf,
   sender: (msg) => {
     const el = q(msg, '[data-testid="recipients:sender"] [title*="@"], [data-testid="message-header-from"] [title*="@"], .message-recipient-item-label [title*="@"], [data-testid*="sender"] [title*="@"]');
     const name = (q(msg, '[data-testid="recipients:sender"], [data-testid="message-header-from"]')?.textContent || "").trim();
