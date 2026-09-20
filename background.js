@@ -156,6 +156,13 @@ async function write(result, nextOwner) {
   ]);
   for (const outcome of outcomes) if (outcome.status === "rejected") console.warn("could not publish latest result", outcome.reason);
 }
+const FAILURES = {
+  ANALYSE: "The scan could not be completed. Retry from the email banner.",
+  SET_DNS: "The preference could not be saved. The saved setting is unchanged.",
+  GET_SETTINGS: "The saved preference could not be read.",
+  SYNC_NOW: "The blocklist refresh could not be completed. Stored entries are unchanged.",
+  FEED_STATUS: "Blocklist coverage could not be read.",
+};
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const kind = callerKind(sender, chrome.runtime);
   if (!msg || typeof msg !== "object" || !kind ||
@@ -205,7 +212,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse(feedStatus((await loadBlocklist()).meta));
     }
   })().catch(() => {
-    const result = { status: "error", error: "The scan could not be completed. Retry from the email banner.", subject: email?.subject || "", sender: email?.sender || {}, analysedAt: Date.now() };
+    if (msg.type !== "ANALYSE") {
+      sendResponse({ error: FAILURES[msg.type] });
+      return;
+    }
+    const result = { status: "error", error: FAILURES.ANALYSE, subject: email?.subject || "", sender: email?.sender || {}, analysedAt: Date.now() };
     sendResponse(result);
     if (scan != null) publish(scan, result, requester);
     else invalidate(requester, result, requestedAt);

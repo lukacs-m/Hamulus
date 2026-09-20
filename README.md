@@ -96,6 +96,10 @@ while ordinary provider links remain recognized. Each anchor is checked even whe
 - Every node matching a client's message selector that has no readable body gets its own "Scan unavailable"
   banner. In a collapsed conversation this may mean one banner per unexpanded message; the collapsed-thread
   DOM of the live clients has not been verified manually, so this is untested against real multi-message threads.
+- Only the Gmail adapter exposes a client-stable message id (`data-message-id`). If Yahoo, Outlook or
+  Proton replace a message's DOM node inside the same page while its body is unreadable, the popup and
+  toolbar can keep showing that message's previous result until a readable scan replaces it; the
+  per-message banner is still correct. This has not been verified against the live clients.
 - Outlook's aria-labels are localised; EN and FR are covered, add your locale to `outlook.js` if needed.
 - Reply-To is not visible in Gmail's DOM without "Show details"; hook it there if you need it.
 - Registrable-domain logic uses a short embedded suffix list, not the full Public Suffix List. This can

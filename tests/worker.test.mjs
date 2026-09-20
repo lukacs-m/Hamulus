@@ -6,7 +6,7 @@ import { scoreTitle } from "../lib/icons.js";
 const brands = await readFile(new URL("../data/brands.json", import.meta.url), "utf8");
 let sequence = 0;
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-async function harness({ dns, entries, updatedAt = Date.now(), localGet, network, session = {}, sessionGet } = {}) {
+async function harness({ dns, entries, updatedAt = Date.now(), localGet, localSet, network, session = {}, sessionGet } = {}) {
   let listener, changed;
   const stored = Object.fromEntries(FEEDS.map(feed => [`feed:${feed.id}`, { entries: entries || [feed.kind === "url" ? "https://bad.test/" : "bad.test"], updatedAt }]));
   if (dns !== undefined) stored.dnsEnabled = dns;
@@ -18,7 +18,7 @@ async function harness({ dns, entries, updatedAt = Date.now(), localGet, network
     alarms: { onAlarm: { addListener() {} }, create() {} },
     storage: { onChanged: { addListener: fn => { changed = fn; } }, local: {
       get: async key => { if (localGet) await localGet(key, stored); return stored; },
-      set: async values => { Object.assign(stored, values); changed(Object.fromEntries(Object.entries(values).map(([k,v]) => [k, { newValue: v }])), "local"); },
+      set: async values => { if (localSet) await localSet(values); Object.assign(stored, values); changed(Object.fromEntries(Object.entries(values).map(([k,v]) => [k, { newValue: v }])), "local"); },
     }, session: {
       get: async () => { if (sessionGet) await sessionGet(); return session; },
       set: async value => { Object.assign(session, value); results.push(value.lastResult); },
@@ -265,4 +265,42 @@ test("an invalidation supersedes scans requested before it but not ones requeste
   await pending;
   await tick(); await tick();
   assert.equal(later.session.lastResult.status, "complete");
+});
+
+test("a failed popup request cannot erase the shared email scan or borrow its wording", async () => {
+  const orphaned = { lastResult: { status: "complete", score: 100, level: "safe", coverage: {} } };
+  const h = await harness({ session: orphaned, localSet: () => { throw new Error("quota exceeded"); } });
+
+  const sync = await h.send({ type: "SYNC_NOW" });
+  await tick(); await tick();
+  assert.match(sync.error, /blocklist refresh could not be completed/i);
+  assert.doesNotMatch(sync.error, /email banner/);
+  assert.equal(h.session.lastResult.status, "complete");
+  assert.equal(h.session.lastResult.score, 100);
+
+  const preference = await h.send({ type: "SET_DNS", enabled: true });
+  await tick(); await tick();
+  assert.match(preference.error, /preference could not be saved/i);
+  assert.doesNotMatch(preference.error, /email banner/);
+  assert.equal(h.session.lastResult.status, "complete");
+  assert.equal(h.icons.length, 0);
+});
+
+test("a failed popup request does not suppress an email scan already in flight", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = await harness({
+    session: { lastResult: { status: "complete", score: 100, level: "safe", coverage: {} } },
+    localGet: key => Array.isArray(key) ? gate : undefined,
+    localSet: () => { throw new Error("quota exceeded"); },
+  });
+  const inflight = h.scan({ messageId: "m1", text: "Hello" });
+  await tick();
+  assert.ok((await h.send({ type: "SYNC_NOW" })).error);
+  await tick(); await tick();
+  release();
+  assert.equal((await inflight).status, "complete");
+  await tick(); await tick();
+  assert.equal(h.session.lastResult.status, "complete");
+  assert.equal(h.session.lastOwner.message, "m1");
 });
