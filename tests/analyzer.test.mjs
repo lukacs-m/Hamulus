@@ -54,3 +54,11 @@ test("distinct destinations and distinct mechanisms keep deducting separately", 
   assert.ok(score([{ ...tracked, hidden: true }]) < score([tracked]));
   assert.ok(score([tracked], context(["links.tracker.test"])) < score([tracked]));
 });
+
+test("a repeated discrepancy yields one finding row and no phantom omissions", () => {
+  const result = analyse({ links: Array.from({ length: 12 }, () => ({ ...tracked })) }, context());
+  assert.equal(result.findings.filter(f => f.id === "LINK_TEXT_MISMATCH").length, 1);
+  assert.equal(result.findingsOmitted, 0);
+  assert.equal(result.linkEvidence.length, 12);
+  assert.ok(result.linkEvidence.every(link => link.reasons.length === 1));
+});

@@ -187,5 +187,50 @@ try {
     assert.equal(email.sender.email, "alex@example.test");
     await outlook.close();
   });
+  await check("overridable text styles are judged on the element that owns the text", async () => {
+    const page = await fixture(`<article><div class="body">
+      <table><tr><td style="font-size:0;line-height:0"><span style="font-size:14px">Verify your account within 24 hours</span></td></tr></table>
+      <div style="color:#ffffff;background:#ffffff">white on white<span style="color:#111111">override is readable</span></div>
+      <div style="visibility:hidden">collapsed away<span style="visibility:visible">override is shown</span></div>
+      <div style="display:none">really hidden</div>
+      <div style="opacity:0">faded out</div>
+    </div></article>`);
+    const email = await summary(page);
+    for (const visible of ["Verify your account within 24 hours", "override is readable", "override is shown"]) {
+      assert.match(email.text, new RegExp(visible), visible);
+    }
+    const hidden = Object.fromEntries(email.hiddenText.excerpts.map(e => [e.text, e.reason]));
+    assert.deepEqual(hidden, {
+      "white on white": "text matches background",
+      "collapsed away": "hidden visibility",
+      "really hidden": "display: none",
+      "faded out": "zero opacity",
+    });
+    assert.equal(email.hiddenTextChars, Object.keys(hidden).join("").length);
+    const result = await answer(page);
+    assert.ok(result.findings.some(f => f.id === "URGENCY"), "urgency text must stay visible to matching");
+    await page.close();
+  });
+  await check("attachment chips outside an unread body cannot stand in for the body", async () => {
+    const page = await fixture(`<div data-testid=message-view>
+      <div data-testid="recipients:sender"><span title=alex@example.test>Alex</span></div>
+      <div data-testid="message-header:subject">Invoice</div>
+      <div data-testid="attachment-item"><span title="invoice.pdf">invoice.pdf</span></div>
+      <iframe title="Email content" srcdoc="<body></body>"></iframe>
+    </div>`, "proton");
+    const [pending] = await waitScans(page, 1);
+    const unread = await summary(page, pending);
+    assert.equal(unread.coverage.bodyUnavailable, true);
+    assert.deepEqual(unread.attachments, ["invoice.pdf"]);
+    assert.equal(unread.text, "");
+    await answer(page, pending, { status: "complete", score: 100, level: "safe", findings: [], coverage: { incomplete: true, notes: ["The message body could not be read."] } });
+    assert.doesNotMatch(await banner(page), /No strong warning signs/);
+    assert.match(await banner(page), /Incomplete assessment/);
+    await page.locator("iframe").evaluate(el => { el.srcdoc = "<p>The real message arrived</p>"; });
+    const populated = await summary(page, (await waitScans(page, 2)).at(-1));
+    assert.notEqual(populated.coverage.bodyUnavailable, true);
+    assert.match(populated.text, /The real message arrived/);
+    await page.close();
+  });
 } finally { await browser.close(); }
 if (failures.length) process.exitCode = 1;

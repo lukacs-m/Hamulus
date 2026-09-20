@@ -123,3 +123,41 @@ test("enabled DNS requests are capped across concurrent sender domains", async (
   const results = await Promise.all(scans);
   assert.equal(results.filter(result => result.coverage.dns === "unknown").length, 4);
 });
+
+test("an unreadable sibling cannot supersede a result it never published", async () => {
+  const h = await harness();
+  const [good, sibling] = await Promise.all([
+    h.scan({ messageId: "page:1", links: [{ href: "https://bad.test/pay", text: "bad.test" }] }),
+    h.scan({ messageId: "page:2", coverage: { unavailable: true } }),
+  ]);
+  assert.equal(good.level, "danger");
+  assert.equal(sibling.status, "error");
+  await tick(); await tick();
+  assert.equal(h.results.at(-1).level, "danger");
+
+  assert.equal((await h.scan({ messageId: "othertab:1", text: "Hello" })).status, "complete");
+  await tick(); await tick();
+  assert.equal((await h.scan({ messageId: "page:1", coverage: { unavailable: true } })).status, "error");
+  await tick(); await tick();
+  assert.equal(h.results.at(-1).status, "complete");
+
+  assert.equal((await h.scan({ messageId: "othertab:1", coverage: { unavailable: true } })).status, "error");
+  await tick(); await tick();
+  assert.equal(h.results.at(-1).status, "error");
+});
+
+test("an unread body is assessed as incomplete metadata, never green and never with DNS", async () => {
+  const h = await harness({ dns: true });
+  const result = await h.scan({ messageId: "page:1", attachments: ["invoice.pdf"], coverage: { bodyUnavailable: true } });
+  assert.equal(result.status, "complete");
+  assert.equal(result.coverage.incomplete, true);
+  assert.equal(result.coverage.dns, "skipped");
+  assert.equal(h.calls.filter(url => url.includes("dns-query")).length, 0);
+  assert.equal(globalThis.Hamulus.iconLevel(result), "neutral");
+  assert.match(globalThis.Hamulus.heading(result), /Incomplete assessment/);
+  assert.ok(result.coverage.notes.some(note => /body could not be read/.test(note)));
+
+  const risky = await h.scan({ messageId: "page:1", attachments: ["invoice.pdf.html"], coverage: { bodyUnavailable: true } });
+  assert.ok(risky.findings.some(f => f.id === "RISKY_ATTACHMENT"));
+  assert.equal(risky.coverage.incomplete, true);
+});

@@ -9,6 +9,7 @@ let brands = null;
 let blocklist = null;
 let syncing = null;
 let latestScan = 0;
+let latestOwner = "";
 let publishing = Promise.resolve();
 let settingsEpoch = 0;
 const dnsCache = new Map();
@@ -141,17 +142,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ error: "Unsupported request or caller." });
     return false;
   }
-  const scan = msg.type === "ANALYSE" ? ++latestScan : null;
-  let email;
+  let email = null;
+  try { if (msg.type === "ANALYSE") email = validateEmail(msg.email); } catch {}
+  let scan = null;
+  if (msg.type === "ANALYSE" && (!email?.coverage.unavailable || email.messageId === latestOwner)) {
+    latestOwner = email?.messageId || "";
+    scan = ++latestScan;
+  }
   (async () => {
     if (msg.type === "ANALYSE") {
-      email = validateEmail(msg.email);
+      if (!email) throw new Error("Invalid email summary.");
       if (email.coverage.unavailable) throw new Error("Message body is unavailable.");
       publish(scan, { status: "scanning", subject: email.subject, sender: email.sender, analysedAt: Date.now() });
       const [bl, br] = await Promise.all([loadBlocklist(), loadBrands()]);
       const enabled = await dnsEnabled();
+      const bodyUnread = email.coverage.bodyUnavailable;
       const domain = canonicalHost((email.sender.email.match(/@([^>\s]+)/) || [])[1]);
-      const dmarc = enabled ? await dmarcPolicy(registrableDomain(domain)) : "unknown";
+      const dmarc = enabled && !bodyUnread ? await dmarcPolicy(registrableDomain(domain)) : "unknown";
       const result = analyse({ ...email, dmarc }, { blocklist: bl, brands: br || {} });
       const feeds = feedStatus(bl.meta);
       const unavailable = Object.values(feeds).filter(feed => feed.state !== "current");
@@ -160,8 +167,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (!br) notes.push("The local brand catalogue is unavailable.");
       if (email.coverage.truncated) notes.push("Message limits were reached. Some content or evidence was omitted; this assessment is incomplete.");
       if (!email.sender.email) notes.push("Sender address could not be extracted; sender checks were not performed.");
-      notes.push(enabled ? `Optional sender-domain DNS lookup: ${dmarc}. This does not authenticate this email.` : "Sender-domain DNS lookup is disabled. No sender-domain metadata was sent by this scan.");
-      result.coverage = { incomplete: result.coverage.incomplete || !!unavailable.length || !br || email.coverage.truncated || !email.sender.email, notes, feeds, dns: enabled ? dmarc : "disabled" };
+      if (bodyUnread) notes.push("The message body could not be read. Only header and attachment details were assessed; the message content is unassessed.");
+      notes.push(!enabled ? "Sender-domain DNS lookup is disabled. No sender-domain metadata was sent by this scan."
+        : bodyUnread ? "Sender-domain DNS lookup was skipped because the message body could not be read. No sender-domain metadata was sent by this scan."
+        : `Optional sender-domain DNS lookup: ${dmarc}. This does not authenticate this email.`);
+      result.coverage = { incomplete: result.coverage.incomplete || !!unavailable.length || !br || email.coverage.truncated || !email.sender.email || bodyUnread, notes, feeds, dns: !enabled ? "disabled" : bodyUnread ? "skipped" : dmarc };
       Object.assign(result, { status: "complete", subject: email.subject, sender: email.sender });
       sendResponse(result);
       publish(scan, result);

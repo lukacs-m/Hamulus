@@ -2,12 +2,28 @@
 window.__emailShield = (() => {
   const states = new WeakMap();
   const hosts = new WeakSet();
+  const identities = new WeakMap();
   const { limits } = Hamulus;
+  const pageToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let current;
   let debounce;
+  let sequence = 0;
   const bodyOf = (msg, ad) => typeof ad.body === "function" ? ad.body(msg) : msg.querySelector(ad.body);
-  // A body element can exist before the message is rendered into it; nothing extracted means nothing was read.
-  const hasContent = email => !!(email.text.trim() || email.links.length || email.images.length || email.forms || email.attachments.length || email.hiddenTextChars);
+  const idOf = msg => {
+    if (!identities.has(msg)) identities.set(msg, `${pageToken}:${++sequence}`);
+    return identities.get(msg);
+  };
+  // Attachments and headers live outside the body, so they never show that the body itself was rendered.
+  const bodyRead = email => !!(email.text.trim() || email.links.length || email.images.length || email.forms || email.hiddenTextChars);
+  function read(msg, ad) {
+    let body = null, email;
+    try { body = bodyOf(msg, ad) || null; email = summarise(msg, body, ad); } catch {}
+    if (!email) return { body };
+    if (bodyRead(email)) return { body, email };
+    if (!email.attachments.length) return { body };
+    email.coverage.bodyUnavailable = true;
+    return { body, email };
+  }
 
   function init(adapter) {
     current = adapter;
@@ -23,9 +39,7 @@ window.__emailShield = (() => {
 
   function scan(ad) {
     for (const msg of document.querySelectorAll(ad.message)) {
-      let body, email;
-      try { body = bodyOf(msg, ad); if (body) email = summarise(msg, body, ad); } catch {}
-      if (email && !hasContent(email)) email = null;
+      const { body, email } = read(msg, ad);
       const fingerprint = email ? JSON.stringify(email) : "unavailable";
       const previous = states.get(msg);
       if (previous?.fingerprint === fingerprint && previous.body === body && previous.host?.isConnected) continue;
@@ -42,7 +56,7 @@ window.__emailShield = (() => {
       if (!email) {
         paint({ status: "error", error: "Message body is unavailable. It will be checked again when it loads." });
         try {
-          chrome.runtime.sendMessage({ type: "ANALYSE", email: { subject: String(ad.subject(msg) || "").slice(0, 300), coverage: { unavailable: true } } }, () => { void chrome.runtime.lastError; });
+          chrome.runtime.sendMessage({ type: "ANALYSE", email: { messageId: idOf(msg), subject: String(ad.subject(msg) || "").slice(0, 300), coverage: { unavailable: true } } }, () => { void chrome.runtime.lastError; });
         } catch {}
         continue;
       }
@@ -52,10 +66,9 @@ window.__emailShield = (() => {
         if (answered || states.get(msg) !== state || !msg.isConnected) return;
         answered = true;
         clearTimeout(state.timer);
-        let latest;
-        let nextFingerprint;
-        try { latest = bodyOf(msg, ad); if (latest) nextFingerprint = JSON.stringify(summarise(msg, latest, ad)); } catch {}
-        if (latest !== body || !body.isConnected || nextFingerprint !== fingerprint) { scan(ad); return; }
+        const next = read(msg, ad);
+        const nextFingerprint = next.email ? JSON.stringify(next.email) : "unavailable";
+        if (next.body !== body || (body && !body.isConnected) || nextFingerprint !== fingerprint) { scan(ad); return; }
         paint(result);
       };
       state.timer = setTimeout(() => finish({ status: "error", error: "The scan timed out. Retry to check this message." }), 15000);
@@ -81,31 +94,46 @@ window.__emailShield = (() => {
       truncated = true;
       return ""; // A sliced URL could point to a different destination.
     };
+    const boxes = new WeakMap();
     const reasons = new WeakMap();
+    const styleOf = el => (el.ownerDocument.defaultView || window).getComputedStyle(el);
+    // display, opacity, clipping and collapsed boxes suppress a whole subtree; font size and colour
+    // are inherited but any descendant can override them, so they belong to the element that owns the text.
+    function boxState(el) {
+      if (!el) return { reason: "", background: "" };
+      if (boxes.has(el)) return boxes.get(el);
+      const parent = el === body ? { reason: "", background: "" } : boxState(el.parentElement);
+      const cs = styleOf(el);
+      const rect = el.getBoundingClientRect();
+      const state = {
+        reason: parent.reason || (cs.display === "none" ? "display: none" :
+          Number.parseFloat(cs.opacity) === 0 ? "zero opacity" :
+          cs.clipPath !== "none" || cs.clip !== "auto" ? "clipped content" :
+          rect.width <= 1 && rect.height <= 1 && el.tagName !== "IMG" ? "very small content area" : ""),
+        background: cs.backgroundColor === "rgba(0, 0, 0, 0)" ? parent.background : cs.backgroundColor,
+      };
+      boxes.set(el, state);
+      return state;
+    }
     function hiddenReason(el) {
       if (!el) return "";
       if (reasons.has(el)) return reasons.get(el);
-      const parent = el === body ? "" : hiddenReason(el.parentElement);
-      const cs = (el.ownerDocument.defaultView || window).getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      const reason = parent || (cs.display === "none" ? "display: none" :
-        cs.visibility === "hidden" || cs.visibility === "collapse" ? "hidden visibility" :
-        Number.parseFloat(cs.opacity) === 0 ? "zero opacity" :
+      const box = boxState(el);
+      const cs = styleOf(el);
+      const reason = box.reason || (cs.visibility === "hidden" || cs.visibility === "collapse" ? "hidden visibility" :
         Number.parseFloat(cs.fontSize) === 0 ? "zero font size" :
         cs.color === "rgba(0, 0, 0, 0)" ? "transparent text" :
-        cs.color === cs.backgroundColor && cs.backgroundColor !== "rgba(0, 0, 0, 0)" ? "text matches background" :
-        cs.clipPath !== "none" || cs.clip !== "auto" ? "clipped content" :
-        rect.width <= 1 && rect.height <= 1 && el.tagName !== "IMG" ? "very small content area" : "");
+        cs.color === box.background ? "text matches background" : "");
       reasons.set(el, reason);
       return reason;
     }
     const links = [], images = [], excerpts = [];
     let chars = 0, hiddenTruncated = false, text = "", forms = 0, nodes = 0;
-    const walker = body.ownerDocument.createTreeWalker(body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    const walker = body && body.ownerDocument.createTreeWalker(body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
       acceptNode: node => node.nodeType === 1 && (hosts.has(node) || ["SCRIPT", "STYLE", "NOSCRIPT"].includes(node.tagName)) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
     });
     let node;
-    while ((node = walker.nextNode())) {
+    while (walker && (node = walker.nextNode())) {
       if (++nodes > limits.nodes) { truncated = true; hiddenTruncated = true; break; }
       if (node.nodeType === 3) {
         const value = node.textContent.trim();
@@ -139,6 +167,7 @@ window.__emailShield = (() => {
     if (attachments.length > limits.attachments) truncated = true;
     const replyTo = String(ad.replyTo?.(msg) || "");
     const result = {
+      messageId: idOf(msg),
       sender: { name: clip(sender.name, 200), email: sender.email?.length > 320 ? (truncated = true, "") : String(sender.email || "") },
       subject: clip(ad.subject(msg), 300), replyTo: replyTo.length > 320 ? (truncated = true, "") : replyTo,
       text, links, images, forms, attachments: attachments.slice(0, limits.attachments).map(name => clip(name, 200)),
@@ -185,7 +214,7 @@ window.__emailShield = (() => {
     if (!current) return;
     for (const msg of document.querySelectorAll(current.message)) {
       let body;
-      try { body = bodyOf(msg, current); console.log({ body, summary: body ? summarise(msg, body, current) : null }); }
+      try { body = bodyOf(msg, current) || null; console.log({ body, summary: summarise(msg, body, current) }); }
       catch (error) { console.warn("Hamulus extraction unavailable", error); }
     }
   }
