@@ -2,6 +2,7 @@
 import { FEEDS, normaliseUrl } from "./lib/feeds.js";
 import { analyse } from "./lib/analyzer.js";
 import { registrableDomain } from "./lib/domains.js";
+import { iconPaths, scoreTitle } from "./lib/icons.js";
 
 let brands = null;
 let blocklist = null; // { urls: Set, domains: Set, meta: {...} }
@@ -77,15 +78,23 @@ async function dmarcPolicy(domain) {
 }
 
 // ---------- messaging ----------
+let latestScan = 0;
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg.type === "ANALYSE") {
+      const scan = ++latestScan;
       const [bl, br] = await Promise.all([loadBlocklist(), loadBrands()]);
       const senderDomain = (String(msg.email.sender?.email || "").match(/@([^>\s]+)/) || [])[1];
       const dmarc = msg.settingsDmarc === false ? "unknown" : await dmarcPolicy(senderDomain ? registrableDomain(senderDomain) : null);
       const result = analyse({ ...msg.email, dmarc }, { blocklist: bl, brands: br });
-      await chrome.storage.session?.set?.({ lastResult: { ...result, subject: msg.email.subject, sender: msg.email.sender } });
       sendResponse(result);
+      if (scan !== latestScan) return;
+      await Promise.all([
+        chrome.storage.session?.set?.({ lastResult: { ...result, subject: msg.email.subject, sender: msg.email.sender } }),
+        chrome.action.setIcon({ path: iconPaths(result.level) }),
+        chrome.action.setTitle({ title: scoreTitle(result) }),
+      ]).catch((e) => console.warn("could not publish latest result", e));
     } else if (msg.type === "FEED_STATUS") {
       sendResponse((await loadBlocklist()).meta);
     } else if (msg.type === "SYNC_NOW") {

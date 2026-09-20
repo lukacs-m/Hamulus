@@ -35,7 +35,7 @@ window.__emailShield = (() => {
   function probe() {
     const ad = current;
     const msgs = [...document.querySelectorAll(ad.message)];
-    console.log("[Email Shield] messages:", msgs.length);
+    console.log("[Hamulus] messages:", msgs.length);
     for (const msg of msgs) {
       let body = null; try { body = bodyOf(msg, ad); } catch (e) { console.warn("body error", e); }
       console.log({ body, sender: ad.sender(msg), subject: ad.subject(msg), attachments: ad.attachments(msg), replyTo: ad.replyTo?.(msg) });
@@ -118,7 +118,7 @@ window.__emailShield = (() => {
     const sub = document.createElement("div"); sub.className = "sub";
     sub.textContent = result.findings.length ? `${result.findings.length} issue${result.findings.length > 1 ? "s" : ""} found — click for details` : "No issues found";
     txt.append(label, sub);
-    const toggle = document.createElement("div"); toggle.className = "toggle"; toggle.textContent = "Email Shield";
+    const toggle = document.createElement("div"); toggle.className = "toggle"; toggle.textContent = "Hamulus";
     bar.append(score, txt, toggle);
 
     const details = document.createElement("div");

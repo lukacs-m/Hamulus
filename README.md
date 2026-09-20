@@ -1,4 +1,4 @@
-# Email Shield — phishing score for every email you open
+# Hamulus - phishing score for every email you open
 
 Chrome / Edge / Brave extension (Manifest V3). Adapters for **Gmail, Yahoo Mail, Outlook on the web
 (personal + Microsoft 365) and Proton Mail**. `content/shared.js` does all the work; each client is a
@@ -15,6 +15,15 @@ Gmail selectors are the most battle-tested; Yahoo relies on `data-test-id`, Outl
 1. `chrome://extensions` → Developer mode → *Load unpacked* → pick this folder.
 2. Open Gmail, open any email: a banner with a 0–100 score appears above the message. Click it for the explanations.
 3. The popup (toolbar icon) shows blocklist freshness and lets you force a refresh.
+
+The toolbar and popup use the supplied hook-and-envelope icon. Before the first scan it is neutral;
+the most recently scanned email changes the hook to green (80–100), amber (50–79), or red (0–49).
+The toolbar tooltip includes the score. It follows the last email the extension was asked to scan, across
+all tabs — not whichever analysis happens to finish first, and not a rating of the active page. Every
+message still gets its own banner with its own score.
+
+Run the tests with `npm test` (Node's built-in runner, no dependencies to install). Pull requests
+re-run them together with a JavaScript syntax check; see `.github/workflows/tests.yml`.
 
 ## Security design (why the email can't hurt you through the extension)
 - **Nothing from the email is executed or fetched.** The content script only reads the DOM that Gmail has
