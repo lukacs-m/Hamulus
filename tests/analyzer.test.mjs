@@ -33,3 +33,24 @@ test("DNS root-dot spellings match hostname and exact-URL blocklists", () => {
     assert.equal(normaliseUrl(`https://docs.google.com${dot}/bad`), normaliseUrl("https://docs.google.com/bad"));
   }
 });
+
+const tracked = { text: "example.com", href: "https://links.tracker.test/c/1" };
+const score = (links, ctx = context()) => analyse({ links }, ctx).score;
+
+test("repeating one identical anchor does not multiply its deduction", () => {
+  const once = score([tracked]);
+  assert.equal(once, 75);
+  assert.equal(score([tracked, { ...tracked }, { ...tracked }]), once);
+  assert.equal(score(Array.from({ length: 12 }, () => ({ ...tracked }))), once);
+  const benign = { text: "Unsubscribe", href: "https://links.tracker.test/c/1" };
+  assert.equal(score([benign, tracked]), once);
+  assert.equal(score([tracked, benign]), once);
+  assert.equal(analyse({ links: [tracked, { ...tracked }] }, context()).linkEvidence.length, 2);
+});
+
+test("distinct destinations and distinct mechanisms keep deducting separately", () => {
+  const elsewhere = { text: "example.com", href: "https://other.tracker.test/c/2" };
+  assert.ok(score([tracked, elsewhere]) < score([tracked]));
+  assert.ok(score([{ ...tracked, hidden: true }]) < score([tracked]));
+  assert.ok(score([tracked], context(["links.tracker.test"])) < score([tracked]));
+});

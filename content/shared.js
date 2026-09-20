@@ -6,6 +6,8 @@ window.__emailShield = (() => {
   let current;
   let debounce;
   const bodyOf = (msg, ad) => typeof ad.body === "function" ? ad.body(msg) : msg.querySelector(ad.body);
+  // A body element can exist before the message is rendered into it; nothing extracted means nothing was read.
+  const hasContent = email => !!(email.text.trim() || email.links.length || email.images.length || email.forms || email.attachments.length || email.hiddenTextChars);
 
   function init(adapter) {
     current = adapter;
@@ -23,6 +25,7 @@ window.__emailShield = (() => {
     for (const msg of document.querySelectorAll(ad.message)) {
       let body, email;
       try { body = bodyOf(msg, ad); if (body) email = summarise(msg, body, ad); } catch {}
+      if (email && !hasContent(email)) email = null;
       const fingerprint = email ? JSON.stringify(email) : "unavailable";
       const previous = states.get(msg);
       if (previous?.fingerprint === fingerprint && previous.body === body && previous.host?.isConnected) continue;
@@ -187,6 +190,8 @@ window.__emailShield = (() => {
     }
   }
   const q = (root, sel) => root.querySelector(sel);
+  // Subjects can legitimately live in a conversation header outside the message node; senders never may.
+  const qConversation = (root, sel) => root.querySelector(sel) || document.querySelector(sel);
   const emailFrom = s => String(s || "").match(/[\w.+-]+@[\w-]+(\.[\w-]+)+/)?.[0].toLowerCase() || "";
-  return { init, probe, q, emailFrom };
+  return { init, probe, q, qConversation, emailFrom };
 })();

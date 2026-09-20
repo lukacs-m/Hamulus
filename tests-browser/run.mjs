@@ -30,6 +30,12 @@ async function fixture(html, adapter) {
   return page;
 }
 const summary = (page, index = 0) => page.evaluate(index => calls[index].message.email, index);
+// A body that exists but holds no content is reported as unavailable, so scans and calls are not 1:1.
+const scanned = page => page.evaluate(() => calls.flatMap((c, i) => c.message.email.coverage?.unavailable ? [] : [i]));
+async function waitScans(page, count) {
+  await page.waitForFunction(count => calls.filter(c => !c.message.email.coverage?.unavailable).length === count, count);
+  return scanned(page);
+}
 const banner = page => page.evaluate(() => roots.filter(r => r.host.isConnected).map(r => r.textContent).join("\n"));
 async function answer(page, index = 0, override) {
   const email = await summary(page, index);
@@ -104,16 +110,16 @@ try {
     };
     for (const [adapter, html] of Object.entries(cases)) {
       const page = await fixture(html, adapter);
-      await page.waitForFunction(() => calls.length > 0);
-      const email = await summary(page);
+      const [first] = await waitScans(page, 1);
+      const email = await summary(page, first);
       assert.equal(email.sender.email, "alex@example.test", adapter);
       assert.equal(email.subject, "Subject", adapter);
       if (adapter === "proton") assert.equal(email.links[0].href, "https://bad.test/pay");
-      await answer(page);
+      await answer(page, first);
       if (adapter === "proton") {
         await page.locator("iframe").evaluate(el => { el.srcdoc = "<p>Replacement message</p>"; });
-        await page.waitForFunction(() => calls.length === 2);
-        await answer(page, 1);
+        const [, second] = await waitScans(page, 2);
+        await answer(page, second);
         assert.equal(await page.locator("[data-email-shield]").count(), 1);
       }
       assert.equal(await page.locator("[data-email-shield]").count(), 1, adapter);
@@ -131,6 +137,55 @@ try {
     await page.waitForFunction(() => calls.length === 3);
     await answer(page, 2);
     await page.close();
+  });
+  await check("bodies without rendered content stay unavailable until content arrives", async () => {
+    const page = await fixture(`<article><p>Header</p><div class="body">   </div></article>`);
+    await page.waitForFunction(() => roots.some(r => r.host.isConnected && r.textContent.includes("Message body is unavailable")));
+    assert.equal((await summary(page)).coverage.unavailable, true);
+    assert.doesNotMatch(await banner(page), /No strong warning signs|\/100/);
+    await page.locator(".body").evaluate(el => { el.textContent = "Now it says something"; });
+    const [populated] = await waitScans(page, 1);
+    await answer(page, populated);
+    assert.match(await banner(page), /No strong warning signs/);
+    await page.close();
+  });
+  await check("a permanently blank iframe never reports a safe score", async () => {
+    const page = await fixture(`<div data-testid=message-view><div data-testid="recipients:sender"><span title=alex@example.test>Alex</span></div><iframe title="Email content" srcdoc="<body></body>"></iframe></div>`, "proton");
+    await page.waitForFunction(() => roots.some(r => r.host.isConnected && r.textContent.includes("Message body is unavailable")));
+    assert.equal((await summary(page)).coverage.unavailable, true);
+    assert.deepEqual(await scanned(page), []);
+    assert.doesNotMatch(await banner(page), /No strong warning signs|\/100/);
+    await page.close();
+  });
+  await check("bodies whose only content is an image, link or form are still scanned", async () => {
+    for (const content of ['<img src="https://tracker.test/pixel.gif" width=1 height=1>', '<a href="https://bad.test/pay"></a>', '<form><input name=password></form>']) {
+      const page = await fixture(`<article><div class="body">${content}</div></article>`);
+      const [index] = await waitScans(page, 1);
+      const email = await summary(page, index);
+      assert.notEqual(email.coverage.unavailable, true, content);
+      assert.ok(email.images.length || email.links.length || email.forms, content);
+      await page.close();
+    }
+  });
+  await check("conversation-level subjects resolve outside the message without borrowing a sender", async () => {
+    const proton = await fixture(`<h1 data-testid="conversation-header:subject">Shared subject</h1>
+      <div data-testid=message-view><div data-testid="recipients:sender"><span title=first@example.test>First</span></div><iframe title="Email content" srcdoc="<p>One</p>"></iframe></div>
+      <div data-testid=message-view><iframe title="Email content" srcdoc="<p>Two</p>"></iframe></div>`, "proton");
+    const [a, b] = await waitScans(proton, 2);
+    const [one, two] = [await summary(proton, a), await summary(proton, b)];
+    assert.equal(one.subject, "Shared subject");
+    assert.equal(two.subject, "Shared subject");
+    assert.equal(one.sender.email, "first@example.test");
+    assert.equal(two.sender.email, "");
+    assert.equal(two.coverage.missingSender, true);
+    await proton.close();
+    const outlook = await fixture(`<div role=heading aria-level=2>Shared subject</div>
+      <div data-app-section=ItemContainer><div data-app-section=ItemHeader><span title=alex@example.test>Alex</span></div><div id=UniqueMessageBody1>Body text</div></div>`, "outlook");
+    const [only] = await waitScans(outlook, 1);
+    const email = await summary(outlook, only);
+    assert.equal(email.subject, "Shared subject");
+    assert.equal(email.sender.email, "alex@example.test");
+    await outlook.close();
   });
 } finally { await browser.close(); }
 if (failures.length) process.exitCode = 1;
