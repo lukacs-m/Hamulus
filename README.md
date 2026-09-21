@@ -6,8 +6,9 @@ small adapter that only supplies DOM selectors (`content/gmail.js`, `yahoo.js`, 
 
 ### Verifying / fixing selectors
 Webmail DOMs are undocumented and change. If no banner appears on a client, open DevTools on an opened
-message and run `window.__emailShield.probe()` — it prints how many messages matched and what body /
-sender / subject / attachments the adapter extracted, so you can see which selector to update.
+message and run `window.__emailShield.probe()` — for each matched message it logs the body element and
+the extracted summary (sender, subject, attachments, links, images, hidden text, coverage), so you can see
+which selector to update.
 The adapters have synthetic browser-fixture coverage, not live-account certification. Yahoo relies on `data-test-id`, Outlook on
 `id^="UniqueMessageBody"` / `data-app-section`, Proton on `data-testid` plus its body iframe.
 
