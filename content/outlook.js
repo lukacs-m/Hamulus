@@ -1,7 +1,7 @@
 // Outlook on the web adapter — outlook.live.com (personal), outlook.office.com / outlook.office365.com (M365).
 // Outlook's class names are hashed; aria-labels are localised (EN "Message body" / FR "Corps du message").
 // The id prefix "UniqueMessageBody" and data-app-section attributes are the most stable hooks.
-const { init, q, emailFrom } = window.__emailShield;
+const { init, q, qConversation, emailFrom } = window.__emailShield;
 
 init({
   message: 'div[data-app-section="ItemContainer"], div[aria-label="Email message"], div[aria-label="Message électronique"], div.wide-content-host',
@@ -13,7 +13,7 @@ init({
     const name = (el?.textContent || "").replace(/<.*>/, "").trim();
     return { name, email: emailFrom(raw) };
   },
-  subject: (msg) => (q(msg, 'div[role="heading"][aria-level="2"], [data-testid="SubjectHeader"], span[title][class*="Subject"]')?.textContent || "").trim(),
+  subject: (msg) => (qConversation(msg, 'div[role="heading"][aria-level="2"], [data-testid="SubjectHeader"], span[title][class*="Subject"]')?.textContent || "").trim(),
   attachments: (msg) => [...msg.querySelectorAll('div[data-app-section="AttachmentWell"] [title], [aria-label*="attachment" i] [title], [aria-label*="pièce jointe" i] [title]')]
     .map((e) => (e.getAttribute("title") || "").trim()).filter((n) => /\.\w{2,5}$/.test(n)),
 });

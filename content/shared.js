@@ -1,147 +1,229 @@
-// Client-agnostic scanner. Each mail client ships a tiny adapter that only supplies DOM selectors.
-// Loaded before the adapter (see manifest "js" order). No modules in content scripts, hence the global.
+// Client adapters supply selectors; summaries and banners stay local to each message.
 window.__emailShield = (() => {
-  const SEEN = new WeakSet();
-
-  let current = null;
+  const states = new WeakMap();
+  const hosts = new WeakSet();
+  const identities = new WeakMap();
+  const { limits } = Hamulus;
+  const pageToken = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  let current;
+  let debounce;
+  let sequence = 0;
+  const bodyOf = (msg, ad) => typeof ad.body === "function" ? ad.body(msg) : msg.querySelector(ad.body);
+  const idOf = (msg, ad) => {
+    const stable = ad.id?.(msg);
+    if (stable) return String(stable).slice(0, 100);
+    if (!identities.has(msg)) identities.set(msg, `${pageToken}:${++sequence}`);
+    return identities.get(msg);
+  };
+  // Attachments and headers live outside the body, so they never show that the body itself was rendered.
+  const bodyRead = email => !!(email.text.trim() || email.links.length || email.images.length || email.forms || email.hiddenTextChars);
+  function read(msg, ad) {
+    let body = null, email;
+    try { body = bodyOf(msg, ad) || null; email = summarise(msg, body, ad); } catch {}
+    if (!email) return { body };
+    if (bodyRead(email)) return { body, email };
+    if (!email.attachments.length) return { body };
+    email.coverage.bodyUnavailable = true;
+    return { body, email };
+  }
 
   function init(adapter) {
     current = adapter;
-    const observer = new MutationObserver(() => scan(adapter));
-    observer.observe(document.body, { childList: true, subtree: true });
-    // Bodies rendered inside iframes (Proton) don't trigger the parent observer: poll as a backup.
+    new MutationObserver(records => {
+      if (records.every(r => hosts.has(r.target) || (r.type === "childList" && [...r.addedNodes, ...r.removedNodes].every(n => hosts.has(n))))) return;
+      clearTimeout(debounce);
+      debounce = setTimeout(() => scan(adapter), 100);
+    }).observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+    // Iframe mutations do not reach the parent observer.
     setInterval(() => scan(adapter), 1500);
     scan(adapter);
   }
 
-  // ad.body: selector string, or function(msg) -> element (used when the body lives in an iframe).
-  const bodyOf = (msg, ad) => (typeof ad.body === "function" ? ad.body(msg) : msg.querySelector(ad.body));
-
   function scan(ad) {
     for (const msg of document.querySelectorAll(ad.message)) {
-      let body;
-      try { body = bodyOf(msg, ad); } catch { body = null; }
-      if (!body || SEEN.has(msg) || body.childElementCount === 0) continue;
-      SEEN.add(msg);
-      const email = summarise(msg, body, ad);
-      chrome.runtime.sendMessage({ type: "ANALYSE", email }, (result) => {
-        if (chrome.runtime.lastError || !result || result.error) return;
-        paintBanner((ad.mount && ad.mount(msg)) || body, result);
-      });
-    }
-  }
-
-  // Run window.__emailShield.probe() in DevTools to see which selectors match on the current page.
-  function probe() {
-    const ad = current;
-    const msgs = [...document.querySelectorAll(ad.message)];
-    console.log("[Hamulus] messages:", msgs.length);
-    for (const msg of msgs) {
-      let body = null; try { body = bodyOf(msg, ad); } catch (e) { console.warn("body error", e); }
-      console.log({ body, sender: ad.sender(msg), subject: ad.subject(msg), attachments: ad.attachments(msg), replyTo: ad.replyTo?.(msg) });
+      const { body, email } = read(msg, ad);
+      const fingerprint = email ? JSON.stringify(email) : "unavailable";
+      const previous = states.get(msg);
+      if (previous?.fingerprint === fingerprint && previous.body === body && previous.host?.isConnected) continue;
+      if (previous) { clearTimeout(previous.timer); previous.host?.remove(); }
+      const state = { body, fingerprint };
+      states.set(msg, state);
+      const anchor = (ad.mount && ad.mount(msg)) || body || msg.firstElementChild;
+      if (!anchor) continue;
+      const retry = () => { if (states.get(msg) === state) { states.delete(msg); state.host?.remove(); scan(ad); } };
+      const paint = result => {
+        state.host?.remove();
+        state.host = paintBanner(anchor, result, retry);
+      };
+      if (!email) {
+        paint({ status: "error", error: "Message body is unavailable. It will be checked again when it loads." });
+        try {
+          chrome.runtime.sendMessage({ type: "ANALYSE", email: { messageId: idOf(msg, ad), subject: String(ad.subject(msg) || "").slice(0, 300), coverage: { unavailable: true } } }, () => { void chrome.runtime.lastError; });
+        } catch {}
+        continue;
+      }
+      paint({ status: "scanning" });
+      let answered = false;
+      const finish = result => {
+        if (answered || states.get(msg) !== state || !msg.isConnected) return;
+        answered = true;
+        clearTimeout(state.timer);
+        const next = read(msg, ad);
+        const nextFingerprint = next.email ? JSON.stringify(next.email) : "unavailable";
+        if (next.body !== body || (body && !body.isConnected) || nextFingerprint !== fingerprint) { scan(ad); return; }
+        paint(result);
+      };
+      state.timer = setTimeout(() => finish({ status: "error", error: "The scan timed out. Retry to check this message." }), 15000);
+      try {
+        chrome.runtime.sendMessage({ type: "ANALYSE", email }, result => {
+          const failed = chrome.runtime.lastError || !result || result.error;
+          finish(failed ? { status: "error", error: "The scan could not be completed. Retry to check this message." } : result);
+        });
+      } catch { finish({ status: "error", error: "The extension is unavailable. Reload this page or retry." }); }
     }
   }
 
   function summarise(msg, body, ad) {
-    const links = [];
-    for (const a of body.querySelectorAll("a[href]")) {
-      links.push({ href: a.getAttribute("href") || "", text: (a.textContent || "").trim().slice(0, 200), hidden: isHidden(a) });
-    }
-    const images = [];
-    for (const img of body.querySelectorAll("img")) {
-      images.push({
-        src: img.getAttribute("src") || "",
-        width: Number(img.getAttribute("width")) || img.width || 0,
-        height: Number(img.getAttribute("height")) || img.height || 0,
-        hidden: isHidden(img),
-      });
-    }
-    let hiddenTextChars = 0;
-    for (const el of body.querySelectorAll("*")) {
-      if (el.children.length === 0 && el.textContent && isHidden(el)) hiddenTextChars += el.textContent.trim().length;
-    }
-    return {
-      sender: ad.sender(msg),
-      replyTo: ad.replyTo ? ad.replyTo(msg) : null,
-      subject: ad.subject(msg),
-      text: (body.innerText || "").slice(0, 20000),
-      links,
-      images,
-      forms: body.querySelectorAll("form, input, select, textarea").length,
-      attachments: ad.attachments(msg),
-      hiddenTextChars,
+    let truncated = false;
+    const clip = (value, max) => {
+      const text = String(value || "");
+      if (text.length > max) truncated = true;
+      return text.slice(0, max);
     };
+    const url = value => {
+      const text = String(value || "");
+      if (text.length <= limits.url) return text;
+      truncated = true;
+      return ""; // A sliced URL could point to a different destination.
+    };
+    const boxes = new WeakMap();
+    const reasons = new WeakMap();
+    const styleOf = el => (el.ownerDocument.defaultView || window).getComputedStyle(el);
+    // display, opacity, clipping and collapsed boxes suppress a whole subtree; font size and colour
+    // are inherited but any descendant can override them, so they belong to the element that owns the text.
+    function boxState(el) {
+      if (!el) return { reason: "", background: "" };
+      if (boxes.has(el)) return boxes.get(el);
+      const parent = el === body ? { reason: "", background: "" } : boxState(el.parentElement);
+      const cs = styleOf(el);
+      const rect = el.getBoundingClientRect();
+      const state = {
+        reason: parent.reason || (cs.display === "none" ? "display: none" :
+          Number.parseFloat(cs.opacity) === 0 ? "zero opacity" :
+          cs.clipPath !== "none" || cs.clip !== "auto" ? "clipped content" :
+          rect.width <= 1 && rect.height <= 1 && el.tagName !== "IMG" ? "very small content area" : ""),
+        background: cs.backgroundColor === "rgba(0, 0, 0, 0)" ? parent.background : cs.backgroundColor,
+      };
+      boxes.set(el, state);
+      return state;
+    }
+    function hiddenReason(el) {
+      if (!el) return "";
+      if (reasons.has(el)) return reasons.get(el);
+      const box = boxState(el);
+      const cs = styleOf(el);
+      const reason = box.reason || (cs.visibility === "hidden" || cs.visibility === "collapse" ? "hidden visibility" :
+        Number.parseFloat(cs.fontSize) === 0 ? "zero font size" :
+        cs.color === "rgba(0, 0, 0, 0)" ? "transparent text" :
+        cs.color === box.background ? "text matches background" : "");
+      reasons.set(el, reason);
+      return reason;
+    }
+    const links = [], images = [], excerpts = [];
+    let chars = 0, hiddenTruncated = false, text = "", forms = 0, nodes = 0;
+    const walker = body && body.ownerDocument.createTreeWalker(body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: node => node.nodeType === 1 && (hosts.has(node) || ["SCRIPT", "STYLE", "NOSCRIPT"].includes(node.tagName)) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
+    let node;
+    while (walker && (node = walker.nextNode())) {
+      if (++nodes > limits.nodes) { truncated = true; hiddenTruncated = true; break; }
+      if (node.nodeType === 3) {
+        const value = node.textContent.trim();
+        if (!value) continue;
+        const reason = hiddenReason(node.parentElement);
+        if (reason) {
+          chars = Math.min(10000000, chars + value.length);
+          if (excerpts.length < limits.excerpts) excerpts.push({ reason, text: value.slice(0, limits.excerpt) });
+          else hiddenTruncated = true;
+          if (value.length > limits.excerpt) hiddenTruncated = true;
+        } else if (text.length < limits.text) text = clip(text + " " + value, limits.text);
+        else truncated = true;
+        continue;
+      }
+      if (node.matches("a[href]")) {
+        if (links.length >= limits.links) { truncated = true; continue; }
+        const rawHref = url(node.getAttribute("href"));
+        let href = "";
+        try { if (rawHref) href = url(new URL(rawHref, node.baseURI).href); } catch {}
+        links.push({ rawHref, href, text: clip(node.textContent.trim(), 200), hidden: !!hiddenReason(node) });
+      }
+      if (node.tagName === "IMG") {
+        if (images.length >= limits.images) { truncated = true; continue; }
+        const size = dimension => Math.min(10000000, Math.max(0, Math.round(Number(node.getAttribute(dimension)) || node[dimension] || 0)));
+        images.push({ src: url(node.getAttribute("src")), width: size("width"), height: size("height"), hidden: !!hiddenReason(node) });
+      }
+      if (node.matches("form,input,select,textarea")) forms++;
+    }
+    const sender = ad.sender(msg) || {};
+    const attachments = ad.attachments(msg) || [];
+    if (attachments.length > limits.attachments) truncated = true;
+    const replyTo = String(ad.replyTo?.(msg) || "");
+    const result = {
+      messageId: idOf(msg, ad),
+      sender: { name: clip(sender.name, 200), email: sender.email?.length > 320 ? (truncated = true, "") : String(sender.email || "") },
+      subject: clip(ad.subject(msg), 300), replyTo: replyTo.length > 320 ? (truncated = true, "") : replyTo,
+      text, links, images, forms, attachments: attachments.slice(0, limits.attachments).map(name => clip(name, 200)),
+      hiddenTextChars: chars, hiddenText: { chars, excerpts, truncated: hiddenTruncated },
+    };
+    result.coverage = { truncated, missingSender: !result.sender.email };
+    return result;
   }
 
-  function isHidden(el) {
-    const cs = (el.ownerDocument.defaultView || window).getComputedStyle(el);
-    if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) return true;
-    if (parseFloat(cs.fontSize) === 0) return true;
-    const r = el.getBoundingClientRect();
-    if (r.width <= 1 && r.height <= 1 && el.tagName !== "IMG") return true;
-    const color = cs.color, bg = cs.backgroundColor;
-    if (color && bg && color === bg && bg !== "rgba(0, 0, 0, 0)") return true;
-    return false;
-  }
-
-  // Banner in a closed shadow root, textContent only: email HTML/CSS can't touch it.
-  function paintBanner(anchor, result) {
-    const host = document.createElement("div");
+  function paintBanner(anchor, result, retry) {
+    const doc = anchor.ownerDocument;
+    const host = doc.createElement("div");
+    hosts.add(host);
     host.setAttribute("data-email-shield", "");
     const root = host.attachShadow({ mode: "closed" });
-    const style = document.createElement("style");
+    const style = doc.createElement("style");
     style.textContent = `
-      :host { all: initial; display: block; margin: 0 0 12px; font: 14px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; }
-      .bar { display: flex; align-items: center; gap: 14px; padding: 10px 14px; border-radius: 8px; cursor: pointer; border: 1px solid; user-select: none; }
-      .safe    { background: #eef7ee; border-color: #8fc98f; color: #1d4d1d; }
-      .caution { background: #fff6e0; border-color: #e6b64a; color: #5a3c00; }
-      .danger  { background: #fdeaea; border-color: #e46b6b; color: #6d1212; }
-      .score { font-size: 26px; font-weight: 700; min-width: 52px; text-align: center; }
-      .label { font-weight: 600; }
-      .sub { opacity: .8; font-size: 13px; }
-      .toggle { margin-left: auto; font-size: 12px; opacity: .7; }
-      ul { margin: 6px 0 0; padding: 0 0 0 18px; }
-      li { margin: 6px 0; }
-      li b { display: block; }
-      li span { opacity: .85; font-size: 13px; }
-      .sev { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-right: 6px; color: #fff; }
-      .sev.critical { background: #b71c1c; } .sev.high { background: #d84315; } .sev.medium { background: #b8860b; } .sev.low { background: #607d8b; }
+      :host { all: initial; display: block; margin: 0 0 12px; font: 14px/1.45 -apple-system, "Segoe UI", sans-serif; color: #222; }
+      .box { border: 1px solid #aaa; border-radius: 8px; background: #f5f5f5; padding: 12px; }
+      .safe { background: #eef7ee; border-color: #8fc98f; } .caution { background: #fff6e0; border-color: #e6b64a; } .danger { background: #fdeaea; border-color: #e46b6b; }
+      h2 { font-size: 16px; margin: 0; } p { margin: 8px 0; } summary, button { cursor: pointer; }
+      summary:focus-visible, button:focus-visible { outline: 3px solid #1766b3; outline-offset: 3px; }
+      .warning { font-size: 13px; } .evidence { border-top: 1px solid #bbb; margin-top: 10px; }
+      p, li, h2, h3 { overflow-wrap: anywhere; unicode-bidi: plaintext; } button { padding: 6px 12px; }
     `;
     root.append(style);
-
-    const bar = document.createElement("div");
-    bar.className = `bar ${result.level}`;
-    const score = document.createElement("div"); score.className = "score"; score.textContent = String(result.score);
-    const txt = document.createElement("div");
-    const label = document.createElement("div"); label.className = "label";
-    label.textContent = { safe: "Looks legitimate", caution: "Be careful with this email", danger: "Likely phishing — do not click or reply" }[result.level];
-    const sub = document.createElement("div"); sub.className = "sub";
-    sub.textContent = result.findings.length ? `${result.findings.length} issue${result.findings.length > 1 ? "s" : ""} found — click for details` : "No issues found";
-    txt.append(label, sub);
-    const toggle = document.createElement("div"); toggle.className = "toggle"; toggle.textContent = "Hamulus";
-    bar.append(score, txt, toggle);
-
-    const details = document.createElement("div");
-    details.hidden = true;
-    const ul = document.createElement("ul");
-    for (const f of result.findings) {
-      const li = document.createElement("li");
-      const b = document.createElement("b");
-      const sev = document.createElement("span"); sev.className = `sev ${f.severity}`; sev.textContent = f.severity;
-      b.append(sev, document.createTextNode(f.title));
-      const span = document.createElement("span"); span.textContent = f.detail;
-      li.append(b, span);
-      ul.append(li);
+    const box = Hamulus.append(root, "div", "", `box ${Hamulus.iconLevel(result)}`);
+    const score = Hamulus.scoreLabel(result);
+    const heading = Hamulus.append(box, "h2", `Hamulus - ${Hamulus.heading(result)}${score ? ` (${score})` : ""}`);
+    heading.setAttribute("role", "status");
+    Hamulus.append(box, "p", Hamulus.warning, "warning");
+    if (result.error) {
+      Hamulus.append(box, "p", result.error);
+      Hamulus.append(box, "button", "Retry scan").addEventListener("click", retry);
     }
-    details.append(ul);
-    bar.addEventListener("click", () => { details.hidden = !details.hidden; });
-    root.append(bar, details);
-    anchor.parentElement.insertBefore(host, anchor);
+    if (result.status !== "scanning") {
+      const details = Hamulus.append(box, "details", "");
+      Hamulus.append(details, "summary", "Assessment details and evidence");
+      Hamulus.details(Hamulus.append(details, "div", ""), result);
+    }
+    anchor.parentElement?.insertBefore(host, anchor);
+    return host;
   }
-
-  // Helper: first matching element among comma-separated fallback selectors.
-  const q = (root, sel) => root.querySelector(sel) || document.querySelector(sel);
-  const emailFrom = (s) => { const m = String(s || "").match(/[\w.+-]+@[\w-]+(\.[\w-]+)+/); return m ? m[0].toLowerCase() : ""; };
-
-  return { init, probe, q, emailFrom };
+  function probe() {
+    if (!current) return;
+    for (const msg of document.querySelectorAll(current.message)) {
+      let body;
+      try { body = bodyOf(msg, current) || null; console.log({ body, summary: summarise(msg, body, current) }); }
+      catch (error) { console.warn("Hamulus extraction unavailable", error); }
+    }
+  }
+  const q = (root, sel) => root.querySelector(sel);
+  // Subjects can legitimately live in a conversation header outside the message node; senders never may.
+  const qConversation = (root, sel) => root.querySelector(sel) || document.querySelector(sel);
+  const emailFrom = s => String(s || "").match(/[\w.+-]+@[\w-]+(\.[\w-]+)+/)?.[0].toLowerCase() || "";
+  return { init, probe, q, qConversation, emailFrom };
 })();
